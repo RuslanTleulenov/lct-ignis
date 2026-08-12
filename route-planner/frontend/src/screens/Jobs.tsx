@@ -5,7 +5,8 @@ import { initials, num } from '../format'
 import { go } from '../router'
 
 const STATUS_LABEL: Record<string, string> = {
-  planned: 'в плане', done: 'выполнена', unassigned: 'не назначена', new: 'ещё не поступила',
+  planned: 'запланирована', done: 'выполнена',
+  unassigned: 'отложена', new: 'не поступила',
 }
 
 export function JobsScreen({ jobs, plan }: { jobs: Job[]; plan: Plan | null }) {
@@ -35,7 +36,7 @@ export function JobsScreen({ jobs, plan }: { jobs: Job[]; plan: Plan | null }) {
         <h2>Заявки<span className="hint">{rows.length} из {jobs.length}</span></h2>
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-          <input placeholder="Заказчик, тип работ, район" value={query}
+          <input placeholder="Объект, вид работ или район" value={query}
                  onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="all">все статусы</option>
@@ -54,12 +55,12 @@ export function JobsScreen({ jobs, plan }: { jobs: Job[]; plan: Plan | null }) {
         <table className="grid">
           <thead>
             <tr>
-              <th style={{ width: 46 }}>Пр.</th>
-              <th>Заказчик и работа</th>
+              <th style={{ width: 52 }}>Приор.</th>
+              <th>Объект и вид работ</th>
               <th style={{ width: 130 }}>Район</th>
-              <th style={{ width: 130 }}>Окно</th>
-              <th style={{ width: 180 }}>Исполнитель</th>
-              <th className="r" style={{ width: 120 }}>Статус</th>
+              <th style={{ width: 160 }}>Окно доступа</th>
+              <th style={{ width: 190 }}>Исполнитель</th>
+              <th className="r" style={{ width: 130 }}>Состояние</th>
             </tr>
           </thead>
           <tbody>
@@ -83,7 +84,7 @@ export function JobsScreen({ jobs, plan }: { jobs: Job[]; plan: Plan | null }) {
                   <td className="num dim">
                     {j.window[0]}–{j.window[1]}
                     {j.window_hard && <span className="pill warn" style={{
-                      marginLeft: 6, fontSize: 10, padding: '2px 7px' }}>жёстк.</span>}
+                      marginLeft: 6, fontSize: 10, padding: '2px 7px' }}>жёсткое</span>}
                   </td>
                   <td>
                     {route ? (
@@ -152,19 +153,19 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 16 }}>
-          <Field k="Адрес" v={job.address} />
-          <Field k="Окно клиента" v={`${job.window[0]}–${job.window[1]}${job.window_hard ? ' (жёсткое)' : ''}`} />
-          <Field k="SLA до" v={job.sla_deadline} />
-          <Field k="Требуется" v={`${job.specialization_name}, ур. ${job.min_level}`} />
-          <Field k="Сложность" v={`${job.complexity} из 5 · ${job.duration_min} мин`} />
-          <Field k="Оборудование" v={job.required_equipment
+          <Field k="Адрес объекта" v={job.address} />
+          <Field k="Окно доступа" v={`${job.window[0]}–${job.window[1]}${job.window_hard ? ' (жёсткое)' : ''}`} />
+          <Field k="Срок по SLA" v={job.sla_deadline} />
+          <Field k="Требуемая квалификация" v={`${job.specialization_name}, уровень ${job.min_level}`} />
+          <Field k="Категория сложности" v={`${job.complexity} из 5 · ${job.duration_min} мин`} />
+          <Field k="Необходимое оборудование" v={job.required_equipment
             .map((q) => q.bulky ? `${q.name} (габарит)` : q.name).join(', ') || '—'} />
         </div>
       </div>
 
       {stop && route && (
         <div className="card">
-          <h2>Назначение</h2>
+          <h2>Назначенный исполнитель</h2>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
             <span className="avatar sm" style={{ background: engineerColor(route.engineer_id) }}>
               {initials(route.engineer_name)}
@@ -185,20 +186,18 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
       {explanation && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           <div className="card">
-            <h2>Почему он</h2>
+            <h2>Обоснование выбора исполнителя</h2>
             <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--ink-75)' }}>
               {explanation.choice.map((r, i) => <li key={i} style={{ marginBottom: 5 }}>{r}</li>)}
             </ul>
-            <h2 style={{ marginTop: 16 }}>Почему в это время</h2>
+            <h2 style={{ marginTop: 16 }}>Обоснование планового времени</h2>
             <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--ink-75)' }}>
               {explanation.timing.map((r, i) => <li key={i} style={{ marginBottom: 5 }}>{r}</li>)}
             </ul>
           </div>
 
           <div className="card">
-            <h2>Альтернативы
-              <span className="hint">оценка вставки в текущий маршрут</span>
-            </h2>
+            <h2>Альтернативные исполнители</h2>
             {!explanation.alternatives.length && (
               <p className="dim">Других допустимых исполнителей нет.</p>
             )}
@@ -222,9 +221,9 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
               </div>
             ))}
             <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
-              Цифра у альтернативы — стоимость вставки в её нынешний маршрут.
-              Итоговая цена считается после полного пересчёта и обычно выше,
-              потому что сдвигаются и другие визиты.
+              Указана стоимость включения заявки в текущий маршрут исполнителя.
+              Итоговая величина определяется после полного пересчёта и, как
+              правило, выше: смещаются и остальные визиты.
             </div>
           </div>
         </div>
@@ -232,7 +231,7 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
 
       {whyNot && (
         <div className="card">
-          <h2>Почему не назначена</h2>
+          <h2>Причины отклонения</h2>
           <p style={{ color: 'var(--ink)' }}>{whyNot.verdict}</p>
           {whyNot.qualified.map((b) => (
             <div key={b.engineer_id} style={{ display: 'flex', gap: 8, marginTop: 6 }}>
@@ -241,8 +240,8 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
             </div>
           ))}
           <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-            Из {whyNot.blocked_total} инженеров службы по квалификации подходят{' '}
-            {whyNot.qualified.length}. Остальные другой специальности.
+            Из {whyNot.blocked_total} инженеров службы требуемую квалификацию
+            имеют {whyNot.qualified.length}. Остальные — другой специальности.
           </div>
         </div>
       )}

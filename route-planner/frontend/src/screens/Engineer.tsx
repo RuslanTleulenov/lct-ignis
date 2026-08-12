@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { Engineer as Eng, Job, Plan } from '../api'
 import { engineerColor, PRIORITY_COLOR, VEHICLE_LABEL } from '../colors'
-import { dur, initials, num } from '../format'
+import { dur, initials, num, plural } from '../format'
 import { go } from '../router'
 import { MapView } from '../components/MapView'
 import { Timeline } from '../components/Timeline'
@@ -68,10 +68,10 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
               </span>
             ))}
             {route?.pickup_warehouse && (
-              <span className="pill">утром: склад {route.pickup_warehouse}</span>
+              <span className="pill">получение оборудования: склад {route.pickup_warehouse}</span>
             )}
             {!eng.can_carry_bulky && (
-              <span className="pill warn">габарит не увезёт</span>
+              <span className="pill warn">без перевозки габарита</span>
             )}
           </div>
         </div>
@@ -85,10 +85,12 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
       {!route?.job_count ? (
         <div className="card">
           <div className="empty">
-            Сегодня без заявок.<br />
+            <div style={{ fontSize: 15, color: 'var(--ink)', marginBottom: 6 }}>
+              Заявки на смену не назначены
+            </div>
             <span style={{ fontSize: 12.5 }}>
-              Это не сбой: подходящих по квалификации заявок не осталось —
-              их разобрали инженеры, которым они оказались ближе по маршруту.
+              Подходящих по квалификации заявок не осталось: их приняли инженеры,
+              у которых объекты оказались ближе по маршруту.
             </span>
           </div>
         </div>
@@ -96,8 +98,8 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
         <>
           {/* ---- лента дня ---- */}
           <div className="card">
-            <h2>Лента дня
-              <span className="hint">маршрут {route.start}–{route.end}</span>
+            <h2>График работы
+              <span className="hint">смена в маршруте {route.start}–{route.end}</span>
             </h2>
             <Timeline route={route} plan={plan} selected={selectedJob}
                       onSelect={onSelectJob} />
@@ -107,7 +109,7 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
             {/* ---- карта ---- */}
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px 10px' }}>
-                <h2 style={{ marginBottom: 0 }}>Маршрут
+                <h2 style={{ marginBottom: 0 }}>Маршрут движения
                   <span className="hint">
                     {num(route.travel_km, 1)} км · {dur(route.travel_min)} в пути
                   </span>
@@ -124,7 +126,9 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
             <div className="stack">
               {/* ---- загрузка ---- */}
               <div className="card">
-                <h2>Загрузка<span className="hint">занятость {dur(busy)}</span></h2>
+                <h2>Структура рабочего времени
+                  <span className="hint">занятость {dur(busy)}</span>
+                </h2>
                 <div className="load">
                   <span className="work" style={{ width: `${route.work_min / total * 100}%` }} />
                   <span className="travel" style={{ width: `${route.travel_min / total * 100}%` }} />
@@ -139,16 +143,19 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
                 </div>
                 {avg && (
                   <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>
-                    Среднее по службе: работа {avg.work} · дорога {avg.travel} мин.
-                    Разброс занятости — {Math.min(...avg.busy)}–{Math.max(...avg.busy)} мин.
+                    В среднем по службе: работа {avg.work} мин, дорога {avg.travel} мин.
+                    Разброс занятости — от {Math.min(...avg.busy)} до {Math.max(...avg.busy)} мин.
                   </div>
                 )}
               </div>
 
               {/* ---- оборудование ---- */}
               <div className="card">
-                <h2>Оборудование на руках
-                  <span className="hint">{eng.equipment.length} позиций</span>
+                <h2>Закреплённое оборудование
+                  <span className="hint">
+                    {eng.equipment.length}{' '}
+                    {plural(eng.equipment.length, 'позиция', 'позиции', 'позиций')}
+                  </span>
                 </h2>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {eng.equipment.map((q) => (
@@ -161,16 +168,16 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
 
           {/* ---- визиты ---- */}
           <div className="card">
-            <h2>Визиты по порядку</h2>
+            <h2>Маршрутный лист</h2>
             <table className="grid">
               <thead>
                 <tr>
-                  <th style={{ width: 28 }}>#</th>
-                  <th style={{ width: 108 }}>Время</th>
-                  <th>Заказчик и работа</th>
-                  <th style={{ width: 150 }}>Окно</th>
-                  <th className="r" style={{ width: 120 }}>От предыдущей</th>
-                  <th className="r" style={{ width: 96 }}>Статус</th>
+                  <th style={{ width: 28 }}>№</th>
+                  <th style={{ width: 108 }}>Плановое время</th>
+                  <th>Объект и вид работ</th>
+                  <th style={{ width: 160 }}>Окно доступа</th>
+                  <th className="r" style={{ width: 130 }}>Переезд</th>
+                  <th className="r" style={{ width: 110 }}>Состояние</th>
                 </tr>
               </thead>
               <tbody>
@@ -213,9 +220,9 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
                       </td>
                       <td className="r">
                         {s.sla_late_min > 0
-                          ? <span className="pill danger">SLA +{s.sla_late_min}</span>
-                          : done ? <span className="pill ok">выполнено</span>
-                            : <span className="muted" style={{ fontSize: 12 }}>впереди</span>}
+                          ? <span className="pill danger">срыв SLA {s.sla_late_min} мин</span>
+                          : done ? <span className="pill ok">выполнена</span>
+                            : <span className="muted" style={{ fontSize: 12 }}>запланирована</span>}
                       </td>
                     </tr>
                   )

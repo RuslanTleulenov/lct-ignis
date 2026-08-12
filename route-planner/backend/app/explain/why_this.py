@@ -78,20 +78,20 @@ def why_this(ds: Dataset, plan: Plan, job: Job,
         actual = service_minutes(job, eng)
         exp.choice.append(
             f"{spec}: уровень {level} при требуемом {job.min_level} — "
-            f"выполнит за {actual} мин вместо {nominal}")
+            f"норматив сокращается с {nominal} до {actual} мин")
     else:
-        exp.choice.append(f"{spec}: уровень {level}, ровно как требует "
-                          f"работа сложности {job.complexity}")
+        exp.choice.append(f"{spec}: уровень {level} — соответствует "
+                          f"категории сложности {job.complexity}")
 
     # --- оборудование -----------------------------------------------------
     if job.required_equipment:
         rare = [ds.equipment[q].name for q in job.required_equipment
                 if ds.equipment[q].is_rare]
-        where = (f", забрал утром на складе {route.pickup_warehouse}"
-                 if route.pickup_warehouse else ", было на руках")
+        where = (f"получено на складе {route.pickup_warehouse}"
+                 if route.pickup_warehouse else "закреплено за инженером")
         kit = ", ".join(ds.equipment[q].name for q in job.required_equipment)
-        exp.choice.append(f"оборудование{where}: {kit}"
-                          + (f" (дефицитное: {', '.join(rare)})" if rare else ""))
+        exp.choice.append(f"оборудование {where}: {kit}"
+                          + (f" (ограниченный парк: {', '.join(rare)})" if rare else ""))
 
     # --- география --------------------------------------------------------
     prev_stop = route.stops[idx - 1]
@@ -103,36 +103,39 @@ def why_this(ds: Dataset, plan: Plan, job: Job,
         detour = (stop.travel_min_from_prev + next_stop.travel_min_from_prev
                   - direct)
         exp.choice.append(
-            f"по пути: крюк {max(0, detour)} мин относительно маршрута без неё "
-            f"({stop.travel_min_from_prev} мин от предыдущего визита)")
+            f"расположение по маршруту: отклонение {max(0, detour)} мин "
+            f"относительно маршрута без этой заявки, "
+            f"{stop.travel_min_from_prev} мин от предыдущего объекта")
     else:
-        exp.choice.append(f"{stop.travel_min_from_prev} мин от предыдущей точки")
+        exp.choice.append(f"{stop.travel_min_from_prev} мин от предыдущего объекта")
 
     candidates = plan.candidates.get(job.id) or [
         ds.engineers[v].id for v in eligible_engineers(ds, job, plan.onboard or {})]
     if len(candidates) == 1:
-        exp.choice.append("единственный возможный исполнитель в этот день")
+        exp.choice.append("единственный исполнитель, допущенный к этим работам")
 
     # --- время ------------------------------------------------------------
     hard = " (жёсткое)" if job.tw_hard else ""
-    exp.timing.append(f"окно клиента {min_to_hhmm(job.tw_start)}–"
-                      f"{min_to_hhmm(job.tw_end)}{hard}, "
-                      f"визит {min_to_hhmm(stop.service_start)}–"
+    exp.timing.append(f"окно доступа {min_to_hhmm(job.tw_start)}–"
+                      f"{min_to_hhmm(job.tw_end)}{hard}, работы запланированы "
+                      f"на {min_to_hhmm(stop.service_start)}–"
                       f"{min_to_hhmm(stop.service_end)}")
     if route.lunch_start is not None and route.lunch_start == stop.arrival:
-        exp.timing.append(f"приехал в {min_to_hhmm(stop.arrival)}, "
-                          f"перед визитом обед {route.lunch_min} мин")
+        exp.timing.append(f"прибытие в {min_to_hhmm(stop.arrival)}, "
+                          f"далее обеденный перерыв {route.lunch_min} мин")
     if stop.wait_min:
-        exp.timing.append(f"ждал {stop.wait_min} мин: "
-                          f"{'окно ещё не открылось' if stop.arrival < job.tw_start else 'резерв в расписании'}")
+        exp.timing.append(
+            f"ожидание {stop.wait_min} мин: "
+            + ('окно доступа ещё не открыто' if stop.arrival < job.tw_start
+               else 'резерв в графике'))
     if stop.sla_late_min:
-        exp.timing.append(f"SLA {min_to_hhmm(job.sla_deadline)} нарушен на "
-                          f"{stop.sla_late_min} мин — заявку пришлось подвинуть "
-                          f"ради более срочных")
+        exp.timing.append(f"срок по SLA {min_to_hhmm(job.sla_deadline)} превышен "
+                          f"на {stop.sla_late_min} мин: заявка смещена в пользу "
+                          f"более срочных")
     else:
         slack = job.sla_deadline - stop.service_start
-        exp.timing.append(f"до дедлайна SLA {min_to_hhmm(job.sla_deadline)} "
-                          f"оставалось {slack} мин")
+        exp.timing.append(f"запас до срока по SLA {min_to_hhmm(job.sla_deadline)} "
+                          f"— {slack} мин")
 
     # --- альтернативы -----------------------------------------------------
     for route_other in plan.routes:
@@ -151,8 +154,8 @@ def why_this(ds: Dataset, plan: Plan, job: Job,
             # это неприемлемо долго.
             exp.alternatives.append(Alternative(
                 other.id, other.name, True,
-                f"тоже мог бы — {ins.detail}; вставка в его маршрут добавит "
-                f"{ins.extra_travel} мин пути", ins.extra_travel))
+                f"допущен и может принять — {ins.detail}; включение в его "
+                f"маршрут добавит {ins.extra_travel} мин пути", ins.extra_travel))
         else:
             exp.alternatives.append(Alternative(
                 other.id, other.name, False, ins.detail))

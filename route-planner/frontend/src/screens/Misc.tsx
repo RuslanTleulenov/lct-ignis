@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { Compare, Dataset, Engineer, Plan, WhyNot } from '../api'
 import { PRIORITY_COLOR, VEHICLE_LABEL } from '../colors'
+import { plural } from '../format'
 import { go } from '../router'
 
 /* ------------------------------------------------------------- Не назначено */
@@ -27,12 +28,16 @@ export function BacklogScreen({ plan, whyNotAll }: {
   return (
     <div className="stack">
       <div className="card">
-        <h2>Не влезло в день
-          <span className="hint">{plan.unassigned.length} заявок</span>
+        <h2>Заявки без исполнителя
+          <span className="hint">
+            {plan.unassigned.length}{' '}
+            {plural(plan.unassigned.length, 'заявка', 'заявки', 'заявок')} к переносу
+          </span>
         </h2>
         <p className="dim">
-          Это не сбой: спрос выше ёмкости службы. Система показывает, что именно
-          упирается — из этого видно, чего не хватает: людей, приборов или машин.
+          Спрос превышает ресурс службы. Ниже указано, что именно ограничивает
+          назначение по каждой заявке: квалификация, оборудование, транспорт или
+          загрузка исполнителей.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
           {Object.entries(summary.reasons).sort((a, b) => b[1] - a[1]).map(([r, n]) => (
@@ -126,20 +131,22 @@ export function EffectScreen({ compare }: { compare: Compare | null }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <div className="card">
-          <h2>Как считался baseline</h2>
+          <h2>Методика сравнения</h2>
           <p className="dim">
-            Грамотный диспетчер: разбирает заявки по срочности окна, отдаёт каждую
-            ближайшему подходящему инженеру, назначенное не переставляет.
-            Комплектация инструментом и заезды на склад — те же, что у оптимизатора:
-            сравнивается маршрутизация, а не удача утренней выдачи.
+            За основу принято ручное планирование: заявки разбираются по срочности
+            окна доступа и передаются ближайшему подходящему инженеру, ранее
+            назначенное не пересматривается. Комплектация оборудованием и заезды
+            на склад совпадают с расчётными — сопоставляется качество
+            маршрутизации, а не условия выдачи инструмента.
           </p>
         </div>
         <div className="card">
-          <h2>Почему нарушений SLA больше</h2>
+          <h2>О расхождении по SLA</h2>
           <p className="dim">
-            У ручного плана их меньше только потому, что он не взял неудобные
-            заявки вовсе, а для клиента несделанная заявка хуже опоздания.
-            Поэтому первой строкой стоит «закрыто в срок».
+            При ручном планировании нарушений меньше только потому, что часть
+            заявок не принимается к исполнению вовсе. Для заказчика невыполненная
+            заявка хуже, чем выполненная с опозданием, поэтому ключевым
+            показателем принято «закрыто в срок».
           </p>
         </div>
       </div>
@@ -156,8 +163,8 @@ export function ReferenceScreen({ dataset, engineers }: {
   if (!dataset) return <div className="empty">Загрузка…</div>
 
   const tabs = [
-    ['types', 'Типы работ'], ['matrix', 'Работа → оборудование'],
-    ['equip', 'Оборудование'], ['wh', 'Склады'], ['staff', 'Состав службы'],
+    ['types', 'Виды работ'], ['matrix', 'Матрица совместимости'],
+    ['equip', 'Оборудование'], ['wh', 'Склады'], ['staff', 'Инженерный состав'],
   ] as const
 
   return (
@@ -173,9 +180,9 @@ export function ReferenceScreen({ dataset, engineers }: {
         {tab === 'types' && (
           <table className="grid">
             <thead><tr>
-              <th>Тип работ</th><th style={{ width: 220 }}>Специализация</th>
-              <th className="r" style={{ width: 90 }}>Уровень</th>
-              <th className="r" style={{ width: 110 }}>Базовое время</th>
+              <th>Вид работ</th><th style={{ width: 230 }}>Специализация</th>
+              <th className="r" style={{ width: 130 }}>Квалификация</th>
+              <th className="r" style={{ width: 140 }}>Норматив времени</th>
             </tr></thead>
             <tbody>
               {dataset.work_types.map((w) => (
@@ -186,7 +193,7 @@ export function ReferenceScreen({ dataset, engineers }: {
                     </div>
                   </td>
                   <td className="dim">{dataset.specializations[w.specialization]}</td>
-                  <td className="r num">от {w.min_level}</td>
+                  <td className="r num">не ниже {w.min_level} уровня</td>
                   <td className="r num">{w.base_duration_min} мин</td>
                 </tr>
               ))}
@@ -198,7 +205,7 @@ export function ReferenceScreen({ dataset, engineers }: {
           <div style={{ overflowX: 'auto' }}>
             <table className="grid" style={{ fontSize: 11.5 }}>
               <thead><tr>
-                <th style={{ minWidth: 230 }}>Работа \ Оборудование</th>
+                <th style={{ minWidth: 240 }}>Вид работ</th>
                 {dataset.equipment.map((q) => (
                   <th key={q.id} className="r" style={{ width: 34 }}>
                     <span title={q.name} style={{
@@ -230,8 +237,8 @@ export function ReferenceScreen({ dataset, engineers }: {
             </table>
             <div className="legend" style={{ marginTop: 10 }}>
               <span><i style={{ background: 'var(--accent)' }} />требуется</span>
-              <span><i style={{ background: 'var(--warn)' }} />габаритное — нужна машина</span>
-              <span style={{ color: 'var(--accent)' }}>жёлтым в заголовке — дефицитные приборы</span>
+              <span><i style={{ background: 'var(--warn)' }} />габаритное, необходим автотранспорт</span>
+              <span style={{ color: 'var(--accent)' }}>жёлтым выделены приборы ограниченного парка</span>
             </div>
           </div>
         )}
@@ -239,21 +246,23 @@ export function ReferenceScreen({ dataset, engineers }: {
         {tab === 'equip' && (
           <table className="grid">
             <thead><tr>
-              <th>Оборудование</th><th style={{ width: 150 }}>Хранение</th>
-              <th className="r" style={{ width: 110 }}>Экземпляров</th>
-              <th className="r" style={{ width: 130 }}>Габарит</th>
+              <th>Наименование</th><th style={{ width: 180 }}>Место хранения</th>
+              <th className="r" style={{ width: 120 }}>В парке</th>
+              <th className="r" style={{ width: 180 }}>Требования к перевозке</th>
             </tr></thead>
             <tbody>
               {dataset.equipment.map((q) => (
                 <tr key={q.id}>
                   <td><b>{q.name}</b>
-                    {q.rare && <span className="pill accent" style={{ marginLeft: 8 }}>дефицит</span>}
+                    {q.rare && <span className="pill accent" style={{ marginLeft: 8 }}>
+                      ограниченный парк</span>}
                   </td>
-                  <td className="dim">{q.stock === 'all' ? 'на любом складе' : `склад ${q.stock}`}</td>
-                  <td className="r num">{q.units}</td>
+                  <td className="dim">{q.stock === 'all'
+                    ? 'на всех складах' : `централизованно, склад ${q.stock}`}</td>
+                  <td className="r num">{q.units} шт.</td>
                   <td className="r">{q.bulky
-                    ? <span className="pill warn">нужна машина</span>
-                    : <span className="muted">—</span>}</td>
+                    ? <span className="pill warn">только автотранспортом</span>
+                    : <span className="muted">без ограничений</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -263,7 +272,8 @@ export function ReferenceScreen({ dataset, engineers }: {
         {tab === 'wh' && (
           <table className="grid">
             <thead><tr>
-              <th>Склад</th><th>Адрес</th><th className="r" style={{ width: 140 }}>Часы работы</th>
+              <th>Наименование</th><th>Адрес</th>
+              <th className="r" style={{ width: 160 }}>Режим работы</th>
             </tr></thead>
             <tbody>
               {dataset.warehouses.map((w) => (
@@ -280,9 +290,9 @@ export function ReferenceScreen({ dataset, engineers }: {
         {tab === 'staff' && (
           <table className="grid">
             <thead><tr>
-              <th>Инженер</th><th style={{ width: 300 }}>Квалификация</th>
-              <th style={{ width: 140 }}>Транспорт</th>
-              <th className="r" style={{ width: 120 }}>Смена</th>
+              <th>Инженер</th><th style={{ width: 320 }}>Квалификация</th>
+              <th style={{ width: 150 }}>Транспорт</th>
+              <th className="r" style={{ width: 130 }}>Рабочая смена</th>
             </tr></thead>
             <tbody>
               {engineers.map((e) => (

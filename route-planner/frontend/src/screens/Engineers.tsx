@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { Engineer, Plan } from '../api'
 import { engineerColor, VEHICLE_LABEL } from '../colors'
-import { dur, initials } from '../format'
+import { dur, initials, plural } from '../format'
 import { go } from '../router'
 
 /**
@@ -59,14 +59,14 @@ export function EngineersScreen({ plan, engineers }: Props) {
   return (
     <div className="stack">
       <div className="card">
-        <h2>Все инженеры
+        <h2>Инженерный состав
           <span className="hint">
-            кто чем занят и как загружен · клик по строке — карточка
+            {engineers.length} {plural(engineers.length, 'человек', 'человека', 'человек')}
           </span>
         </h2>
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center' }}>
-          <input placeholder="Поиск по имени или специализации" value={query}
+          <input placeholder="Фамилия или специализация" value={query}
                  onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
           <span className="spacer" />
           {idle > 0 && (
@@ -87,9 +87,9 @@ export function EngineersScreen({ plan, engineers }: Props) {
               <th style={{ width: 130 }}>Транспорт</th>
               <th style={{ width: 110 }}>Смена</th>
               <th className="r" style={{ width: 70 }}>Заявок</th>
-              <th style={{ width: 260 }}>Загрузка за день</th>
+              <th style={{ width: 260 }}>Структура рабочего времени</th>
               <th className="r" style={{ width: 96 }}>Занятость</th>
-              <th className="r" style={{ width: 80 }}>SLA</th>
+              <th className="r" style={{ width: 100 }}>Срыв SLA</th>
             </tr>
           </thead>
           <tbody>
@@ -126,7 +126,7 @@ export function EngineersScreen({ plan, engineers }: Props) {
                       <span className="lunch" style={{ width: `${lunch / (busy + lunch + wait) * 100}%` }} />
                       <span className="idle" style={{ width: `${wait / (busy + lunch + wait) * 100}%` }} />
                     </div>
-                  ) : <span className="muted" style={{ fontSize: 12 }}>день пуст</span>}
+                  ) : <span className="muted" style={{ fontSize: 12 }}>нет заявок</span>}
                 </td>
                 <td className="r num">{jobs ? dur(busy) : '—'}</td>
                 <td className="r">

@@ -11,11 +11,11 @@ import { JobsScreen, JobScreen } from './screens/Jobs'
 import { BacklogScreen, EffectScreen, ReferenceScreen } from './screens/Misc'
 
 const NAV = [
-  { path: '/', screen: 'overview', ic: '◉', label: 'Обзор дня' },
+  { path: '/', screen: 'overview', ic: '◉', label: 'Сводка дня' },
   { path: '/engineers', screen: 'engineers', ic: '☰', label: 'Инженеры' },
   { path: '/jobs', screen: 'jobs', ic: '✦', label: 'Заявки' },
-  { path: '/backlog', screen: 'backlog', ic: '⚠', label: 'Не назначено' },
-  { path: '/effect', screen: 'effect', ic: '↗', label: 'Эффект' },
+  { path: '/backlog', screen: 'backlog', ic: '⚠', label: 'Отложенные' },
+  { path: '/effect', screen: 'effect', ic: '↗', label: 'Оценка эффекта' },
   { path: '/reference', screen: 'reference', ic: '▤', label: 'Справочники' },
 ] as const
 
@@ -205,14 +205,14 @@ export default function App() {
         <span className="spacer" />
 
         <select value={preset} onChange={(e) => setPreset(e.target.value)}
-                title="Что важнее сегодня">
-          <option value="default">Сбалансировано</option>
-          <option value="sla">Уложиться в SLA</option>
-          <option value="travel">Экономить пробег</option>
-          <option value="balance">Ровная загрузка</option>
+                title="Критерий оптимизации">
+          <option value="default">Сбалансированный план</option>
+          <option value="sla">Приоритет соблюдения SLA</option>
+          <option value="travel">Минимум пробега</option>
+          <option value="balance">Равномерная загрузка</option>
         </select>
         <select value={timeLimit} onChange={(e) => setTimeLimit(Number(e.target.value))}
-                title="Секунд на расчёт">
+                title="Ограничение времени расчёта">
           <option value={5}>5 с</option>
           <option value={15}>15 с</option>
           <option value={30}>30 с</option>
@@ -223,16 +223,16 @@ export default function App() {
         </button>
         <button onClick={() => setPlaying((v) => !v)}
                 disabled={(!!busy && !playing) || !plan || !hasEventsLeft}>
-          {playing ? '⏸ Пауза' : '▶ Проиграть день'}
+          {playing ? 'Приостановить' : 'Смоделировать день'}
         </button>
         <select value={stability} onChange={(e) => setStability(Number(e.target.value))}
-                title="Во сколько минут пути обходится перенос визита другому инженеру">
-          <option value={0}>без штрафа</option>
-          <option value={80}>стабильность 80</option>
-          <option value={200}>стабильность 200</option>
-          <option value={600}>стабильность 600</option>
+                title="Насколько дорого обходится передача визита другому исполнителю">
+          <option value={0}>Стабильность: не учитывать</option>
+          <option value={80}>Стабильность: низкая</option>
+          <option value={200}>Стабильность: средняя</option>
+          <option value={600}>Стабильность: высокая</option>
         </select>
-        <button className="ghost" onClick={reset} disabled={!!busy}>Сброс</button>
+        <button className="ghost" onClick={reset} disabled={!!busy}>Сбросить</button>
       </div>
 
       <div className="body">

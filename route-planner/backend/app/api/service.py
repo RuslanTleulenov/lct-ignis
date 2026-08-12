@@ -94,9 +94,9 @@ class PlanningService:
             self.version += 1
             k = self.plan.kpi
             self._note("build",
-                       f"Построен план на день: назначено "
-                       f"{k['jobs_assigned']}/{k['jobs_total']}, "
-                       f"в пути {k['travel_min']} мин")
+                       f"План на смену сформирован: назначено "
+                       f"{k['jobs_assigned']} из {k['jobs_total']}, "
+                       f"время в пути {k['travel_min']} мин")
             return self.plan
 
     def replan_at(self, now: int, time_limit_s: int = 3,
@@ -180,8 +180,8 @@ class PlanningService:
             self.pins[job_id] = engineer_id
             self._resolve(time_limit_s)
             self._note("pin",
-                       f"Диспетчер закрепил {job_id} за "
-                       f"{self.ds.engineer(engineer_id).name}")
+                       f"Заявка {job_id} закреплена диспетчером за "
+                       f"исполнителем: {self.ds.engineer(engineer_id).name}")
             return self._cost_of_change(before)
 
     def clear_pin(self, job_id: str, time_limit_s: int | None = None) -> dict:
@@ -191,7 +191,7 @@ class PlanningService:
             before = dict(self.plan.kpi) if self.plan else {}
             del self.pins[job_id]
             self._resolve(time_limit_s)
-            self._note("pin", f"Снято закрепление {job_id}")
+            self._note("pin", f"Закрепление заявки {job_id} снято")
             return self._cost_of_change(before)
 
     def _resolve(self, time_limit_s: int | None) -> None:

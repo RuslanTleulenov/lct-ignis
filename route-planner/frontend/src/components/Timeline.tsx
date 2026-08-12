@@ -120,14 +120,14 @@ export function Timeline({ route, plan, from = 8 * 60, to = 20 * 60,
 
       <div className="legend" style={{ marginTop: 8 }}>
         <span><i style={{ background: '#24304a', border: '1px solid #35507f' }} />визит</span>
-        <span><i style={{ background: '#43434e' }} />в пути</span>
+        <span><i style={{ background: '#43434e' }} />переезд</span>
         <span><i style={{ background: '#4d7cff' }} />метро</span>
-        <span><i style={{ background: '#3a3a44' }} />обед</span>
-        <span><i style={{ background: '#3d4a5f' }} />окно клиента</span>
-        <span><i style={{ background: 'transparent', border: '2px solid var(--danger)' }} />нарушен SLA</span>
-        <span><i style={{ background: 'transparent', border: '2px dashed var(--accent)' }} />закреплена</span>
+        <span><i style={{ background: '#3a3a44' }} />обеденный перерыв</span>
+        <span><i style={{ background: '#3d4a5f' }} />окно доступа</span>
+        <span><i style={{ background: 'transparent', border: '2px solid var(--danger)' }} />срыв SLA</span>
+        <span><i style={{ background: 'transparent', border: '2px dashed var(--accent)' }} />закреплена диспетчером</span>
         <span className="num" style={{ marginLeft: 'auto' }}>
-          в пути {dur(route.travel_min)} · работа {dur(route.work_min)}
+          работы {dur(route.work_min)} · переезды {dur(route.travel_min)}
         </span>
       </div>
     </div>

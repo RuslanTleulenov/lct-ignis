@@ -160,12 +160,15 @@ input::placeholder { color: var(--ink-30); }
 
 .body { display: flex; flex: 1; min-height: 0; }
 
+/* Ширина задаётся через flex-basis, а не width: у флекс-элемента
+   `min-width: auto` иначе не даёт сжаться ниже содержимого. */
 .rail {
-  width: 216px; flex: none; background: var(--surface);
+  flex: 0 0 216px; min-width: 0; overflow: hidden;
+  background: var(--surface);
   border-right: 1px solid var(--line); padding: 12px 10px;
-  display: flex; flex-direction: column; gap: 2px; transition: width .15s;
+  display: flex; flex-direction: column; gap: 2px;
 }
-.rail.collapsed { width: 60px; }
+.rail.collapsed { flex-basis: 60px; }
 .rail a {
   display: flex; align-items: center; gap: 11px;
   padding: 9px 12px; border-radius: var(--r-md);

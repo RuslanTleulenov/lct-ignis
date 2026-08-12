@@ -444,21 +444,24 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
     # 1. Заявки, поступившие после начала дня
     for j in jobs:
         if not j["known_at_day_start"]:
+            kind = "аварийная заявка" if j["priority"] == "P1" else "заявка"
             events.append({
                 "at": j["created_at"][-5:],
                 "type": "job_created",
                 "payload": j["id"],
-                "comment": f"Новая заявка {j['priority']}: {j['customer']}",
+                "comment": f"Поступила {kind} {j['priority']}: {j['customer']}",
             })
 
     # 2. Визиты, которые затянулись
     planned = [j for j in jobs if j["known_at_day_start"]]
     for j in rnd.sample(planned, k=min(4, len(planned))):
+        extra = rnd.choice([20, 30, 45])
         events.append({
             "at": f"{rnd.randint(10, 15):02d}:{rnd.choice(['00', '15', '30', '45'])}",
             "type": "job_overrun",
-            "payload": f"{j['id']}:+{rnd.choice([20, 30, 45])}",
-            "comment": f"{j['id']}: работы затянулись",
+            "payload": f"{j['id']}:+{extra}",
+            "comment": f"{j['id']}, {j['customer']}: превышение норматива "
+                       f"на {extra} мин",
         })
 
     # 3. Отмена клиентом
@@ -467,7 +470,7 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
             "at": f"{rnd.randint(9, 14):02d}:{rnd.choice(['00', '20', '40'])}",
             "type": "job_cancelled",
             "payload": j["id"],
-            "comment": f"{j['customer']} отменил визит",
+            "comment": f"Отмена заказчиком: {j['customer']}",
         })
 
     # 4. Инженер выбыл: болезнь и поломка авто — самые болезненные сценарии
@@ -476,7 +479,8 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
         "at": "08:10",
         "type": "engineer_unavailable",
         "payload": sick["id"],
-        "comment": f"{sick['name']} на больничном — заявки надо перераспределить",
+        "comment": f"{sick['name']} снят со смены по болезни, "
+                   f"заявки подлежат перераспределению",
     })
     with_car = [e for e in engineers
                 if e["vehicle_type"] != "walk_transit" and e["id"] != sick["id"]]
@@ -486,7 +490,8 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
             "at": "13:20",
             "type": "vehicle_breakdown",
             "payload": broken["id"],
-            "comment": f"{broken['name']}: сломался автомобиль, дальше пешком",
+            "comment": f"{broken['name']}: отказ автотранспорта, "
+                       f"переход на пеший режим",
         })
 
     events.sort(key=lambda e: e["at"])

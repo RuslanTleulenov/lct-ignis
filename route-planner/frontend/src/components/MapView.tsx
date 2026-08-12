@@ -35,16 +35,20 @@ interface Props {
   changedJobs: Set<string>
   onSelectJob: (id: string) => void
   onSelectEngineer: (id: string | null) => void
+  /** Показывать маршрут одного инженера и подогнать масштаб под него. */
+  focusEngineer?: string | null
+  /** Приглушить цвета: 13 ярких линий на общей карте не различаются. */
+  neutral?: boolean
 }
 
 export function MapView({
   plan, dataset, selectedJob, selectedEngineer, changedJobs,
-  onSelectJob, onSelectEngineer,
+  onSelectJob, onSelectEngineer, focusEngineer = null, neutral = false,
 }: Props) {
   const holder = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const ready = useRef(false)
-  const fitted = useRef(false)
+  const fitted = useRef<string | boolean>(false)
   // Обработчики читают актуальные пропсы через ref: иначе на карте навсегда
   // останется замыкание с первого рендера и клики начнут выбирать не то.
   const handlers = useRef({ onSelectJob, onSelectEngineer })
@@ -189,7 +193,9 @@ export function MapView({
 
       for (const route of plan?.routes ?? []) {
         if (!route.job_count) continue
-        const color = engineerColor(route.engineer_id)
+        if (focusEngineer && route.engineer_id !== focusEngineer) continue
+        const color = neutral && !focusEngineer
+          ? '#6b6b7a' : engineerColor(route.engineer_id)
         // Ломаная приходит с бэкенда по перегонам и повторяет улицы. Если её
         // нет (время считалось приближением), соединяем точки прямой — как
         // раньше, но это заметно и честно отражает качество расчёта.
@@ -253,18 +259,23 @@ export function MapView({
         })),
       })
 
-      if (!fitted.current && stopFeatures.length) {
+      // На карточке инженера масштаб подгоняется под его маршрут при каждой
+      // смене инженера, на общей карте — только один раз, иначе карта будет
+      // прыгать после каждого пересчёта.
+      const shouldFit = focusEngineer ? fitted.current !== focusEngineer
+        : !fitted.current
+      if (shouldFit && stopFeatures.length) {
         const b = new maplibregl.LngLatBounds()
         for (const f of stopFeatures) {
           b.extend((f.geometry as GeoJSON.Point).coordinates as [number, number])
         }
-        m.fitBounds(b, { padding: 60, duration: 0 })
-        fitted.current = true
+        m.fitBounds(b, { padding: 60, duration: focusEngineer ? 400 : 0 })
+        fitted.current = focusEngineer || true
       }
     }
     if (ready.current) apply()
     else m.once('data-ready', apply)
-  }, [plan, dataset, changedJobs])
+  }, [plan, dataset, changedJobs, focusEngineer, neutral])
 
   // ---- подсветка выбранного ----
   useEffect(() => {

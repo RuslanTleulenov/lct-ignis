@@ -3,12 +3,25 @@ import {
   api, type Compare, type DayEvent, type Dataset, type Engineer,
   type Explanation, type Job, type LogEntry, type Plan, type WhyNot,
 } from './api'
-import { MapView } from './components/MapView'
-import { Gantt } from './components/Gantt'
-import { KpiBar } from './components/KpiBar'
-import { SidePanel, type Tab } from './components/SidePanel'
+import { go, useRoute } from './router'
+import { OverviewScreen } from './screens/Overview'
+import { EngineersScreen } from './screens/Engineers'
+import { EngineerScreen } from './screens/Engineer'
+import { JobsScreen, JobScreen } from './screens/Jobs'
+import { BacklogScreen, EffectScreen, ReferenceScreen } from './screens/Misc'
+
+const NAV = [
+  { path: '/', screen: 'overview', ic: '◉', label: 'Обзор дня' },
+  { path: '/engineers', screen: 'engineers', ic: '☰', label: 'Инженеры' },
+  { path: '/jobs', screen: 'jobs', ic: '✦', label: 'Заявки' },
+  { path: '/backlog', screen: 'backlog', ic: '⚠', label: 'Не назначено' },
+  { path: '/effect', screen: 'effect', ic: '↗', label: 'Эффект' },
+  { path: '/reference', screen: 'reference', ic: '▤', label: 'Справочники' },
+] as const
 
 export default function App() {
+  const route = useRoute()
+
   const [dataset, setDataset] = useState<Dataset | null>(null)
   const [engineers, setEngineers] = useState<Engineer[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
@@ -19,15 +32,14 @@ export default function App() {
   const [whyNotAll, setWhyNotAll] = useState<WhyNot[]>([])
 
   const [selectedJob, setSelectedJob] = useState<string | null>(null)
-  const [selectedEngineer, setSelectedEngineer] = useState<string | null>(null)
   const [explanation, setExplanation] = useState<Explanation | null>(null)
   const [whyNot, setWhyNot] = useState<WhyNot | null>(null)
 
-  const [tab, setTab] = useState<Tab>('explain')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<{ head: string; body: string } | null>(null)
   const [playing, setPlaying] = useState(false)
+  const [railOpen, setRailOpen] = useState(true)
 
   const [preset, setPreset] = useState('default')
   const [timeLimit, setTimeLimit] = useState(15)
@@ -35,12 +47,11 @@ export default function App() {
 
   const busyRef = useRef(false)
 
-  // ---- справочники ----
   useEffect(() => {
     Promise.all([api.dataset(), api.engineers(), api.events()])
       .then(([d, e, ev]) => { setDataset(d); setEngineers(e); setEvents(ev) })
       .catch((err) => setError(String(err.message ?? err)))
-    api.plan().then(afterPlan).catch(() => { /* плана ещё нет — это норма */ })
+    api.plan().then((p) => { setPlan(p); void refreshAux() }).catch(() => {})
   }, [])
 
   const refreshAux = useCallback(async () => {
@@ -50,12 +61,6 @@ export default function App() {
     api.whyNotAll().then(setWhyNotAll).catch(() => setWhyNotAll([]))
   }, [])
 
-  function afterPlan(p: Plan) {
-    setPlan(p)
-    void refreshAux()
-  }
-
-  // ---- операции ----
   const run = useCallback(async (
     label: string, fn: () => Promise<Plan>,
   ): Promise<Plan | null> => {
@@ -80,17 +85,16 @@ export default function App() {
 
   const build = useCallback(async () => {
     setSelectedJob(null)
-    setSelectedEngineer(null)
     setExplanation(null)
     setCompare(null)
     const p = await run('Считаю план дня…', () => api.build(preset, timeLimit))
     if (p) {
       setToast({
         head: 'План построен',
-        body: `Назначено ${p.kpi.jobs_assigned} из ${p.kpi.jobs_total}, ` +
-          `в пути ${p.kpi.travel_min} мин, нарушений SLA ${p.kpi.sla_violations}`,
+        body: `Назначено ${p.kpi.jobs_assigned} из ${p.kpi.jobs_total}, `
+          + `в пути ${p.kpi.travel_min} мин, нарушений SLA ${p.kpi.sla_violations}`,
       })
-      api.compare().then(setCompare).catch(() => { /* не критично */ })
+      api.compare().then(setCompare).catch(() => {})
     }
   }, [run, preset, timeLimit])
 
@@ -106,16 +110,12 @@ export default function App() {
   }, [run, stability])
 
   const pin = useCallback(async (jobId: string, engineerId: string | null) => {
-    const p = await run(
-      engineerId ? 'Закрепляю и пересчитываю…' : 'Снимаю закрепление…',
-      () => api.pin(jobId, engineerId),
-    )
+    const p = await run(engineerId ? 'Закрепляю и пересчитываю…' : 'Снимаю закрепление…',
+      () => api.pin(jobId, engineerId))
     if (!p) return
-    // Цену ручного решения показываем сразу и без прикрас: диспетчер имеет
-    // право поступить по-своему, но должен видеть, во что это обошлось.
     const c = p.cost
-    const parts: string[] = []
     const sign = (n: number) => (n > 0 ? `+${n}` : String(n))
+    const parts: string[] = []
     if (c?.travel_delta_min) parts.push(`${sign(c.travel_delta_min)} мин в пути`)
     if (c?.assigned_delta) parts.push(`${sign(c.assigned_delta)} заявок в плане`)
     if (c?.sla_delta) parts.push(`${sign(c.sla_delta)} нарушений SLA`)
@@ -128,74 +128,41 @@ export default function App() {
   const reset = useCallback(async () => {
     setPlaying(false)
     await api.reset()
-    setPlan(null)
-    setCompare(null)
-    setSelectedJob(null)
-    setSelectedEngineer(null)
-    setExplanation(null)
-    setWhyNotAll([])
-    setToast(null)
+    setPlan(null); setCompare(null); setSelectedJob(null)
+    setExplanation(null); setWhyNotAll([]); setToast(null)
     await refreshAux()
   }, [refreshAux])
 
-  // ---- автопрогон дня ----
   useEffect(() => {
     if (!playing || busy) return
-    const remaining = events.filter((e) => e.at > (plan?.now ?? '00:00'))
-    if (!remaining.length) { setPlaying(false); return }
+    if (!events.some((e) => e.at > (plan?.now ?? '00:00'))) { setPlaying(false); return }
     const id = setTimeout(() => { void step() }, 900)
     return () => clearTimeout(id)
   }, [playing, busy, plan, events, step])
 
-  // ---- WebSocket: план мог поменять другой клиент ----
+  // ---- объяснение выбранной заявки ----
+  const jobInFocus = route.screen === 'job' ? route.id : selectedJob
   useEffect(() => {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    let socket: WebSocket | null = null
-    try {
-      socket = new WebSocket(`${proto}://${location.host}/ws`)
-    } catch {
-      return
-    }
-    socket.onmessage = (msg) => {
-      const data = JSON.parse(msg.data)
-      if (data.type === 'plan' && data.plan) {
-        setPlan((prev) => {
-          const cur = Number(prev?.id?.split('-')[1] ?? 0)
-          return data.version > cur ? data.plan : prev
-        })
-      }
-    }
-    return () => socket?.close()
-  }, [])
+    if (!jobInFocus || !plan) { setExplanation(null); setWhyNot(null); return }
+    setExplanation(null); setWhyNot(null)
+    const assigned = plan.routes.some((r) => r.stops.some((s) => s.job_id === jobInFocus))
+    if (assigned) api.explain(jobInFocus).then(setExplanation).catch(() => {})
+    else api.whyNot(jobInFocus).then(setWhyNot).catch(() => {})
+  }, [jobInFocus, plan])
 
-  // ---- выбор заявки ----
   useEffect(() => {
-    if (!selectedJob || !plan) { setExplanation(null); setWhyNot(null); return }
-    setExplanation(null)
-    setWhyNot(null)
-    const assigned = plan.routes.some((r) =>
-      r.stops.some((s) => s.job_id === selectedJob))
-    if (assigned) {
-      api.explain(selectedJob).then(setExplanation).catch(() => setExplanation(null))
-    } else {
-      api.whyNot(selectedJob).then(setWhyNot).catch(() => setWhyNot(null))
-    }
-  }, [selectedJob, plan])
+    if (!toast) return
+    const id = setTimeout(() => setToast(null), 6000)
+    return () => clearTimeout(id)
+  }, [toast])
 
-  const selectJob = useCallback((id: string) => {
-    setSelectedJob(id)
-    const assigned = plan?.routes.some((r) => r.stops.some((s) => s.job_id === id))
-    setTab(assigned ? 'explain' : 'why')
-    if (assigned) {
-      const route = plan?.routes.find((r) => r.stops.some((s) => s.job_id === id))
-      if (route) setSelectedEngineer(route.engineer_id)
-    }
-  }, [plan])
-
-  const selectEngineer = useCallback((id: string | null) => {
-    setSelectedEngineer(id)
-    if (id) { setSelectedJob(null); setTab('explain') }
-  }, [])
+  // Сравнение считается лениво: оно требует прогона жадного планировщика,
+  // а нужно только на своём экране. Без этого экран «Эффект» оставался пустым
+  // при заходе на уже построенный план.
+  useEffect(() => {
+    if (route.screen !== 'effect' || compare || !plan || busy) return
+    api.compare().then(setCompare).catch(() => {})
+  }, [route.screen, compare, plan, busy])
 
   const changedJobs = useMemo(() => {
     const s = new Set<string>()
@@ -204,21 +171,37 @@ export default function App() {
     return s
   }, [plan])
 
-  useEffect(() => {
-    if (!toast) return
-    const id = setTimeout(() => setToast(null), 6000)
-    return () => clearTimeout(id)
-  }, [toast])
-
   const hasEventsLeft = events.some((e) => e.at > (plan?.now ?? '00:00'))
+  const pinCount = plan ? Object.keys(plan.pins).length : 0
+  const counts: Record<string, number | undefined> = {
+    '/engineers': engineers.length || undefined,
+    '/jobs': jobs.length || undefined,
+    '/backlog': plan?.unassigned.length || undefined,
+  }
 
   return (
     <div className="app">
-      <div className="header">
-        <h1>Диспетчерская</h1>
-        <span className="sub">
-          {dataset ? `${dataset.date} · ${dataset.counts.jobs} заявок · ${dataset.counts.engineers} инженеров` : 'загрузка…'}
-        </span>
+      <div className="topbar">
+        <button className="ghost" style={{ padding: '7px 11px' }}
+                onClick={() => setRailOpen((v) => !v)} title="Свернуть меню">☰</button>
+        <a className="brand" href="#/">
+          <span className="mark">ВС</span>
+          <span>
+            <span className="name">Выездная служба</span>
+            <span className="sub">{dataset
+              ? `${dataset.date} · ${dataset.counts.jobs} заявок · ${dataset.counts.engineers} инженеров`
+              : 'загрузка…'}</span>
+          </span>
+        </a>
+
+        <span className="clock">{plan?.now ?? '—'}</span>
+        {pinCount > 0 && <span className="pill accent">закреплено · {pinCount}</span>}
+        {busy && (
+          <span className="pill" style={{ animation: 'pulse 1.2s infinite' }}>
+            {busy}
+          </span>
+        )}
+
         <span className="spacer" />
 
         <select value={preset} onChange={(e) => setPreset(e.target.value)}
@@ -234,21 +217,12 @@ export default function App() {
           <option value={15}>15 с</option>
           <option value={30}>30 с</option>
         </select>
-        <button className="primary" onClick={build} disabled={!!busy}>
-          Построить план
-        </button>
-
-        {plan && Object.keys(plan.pins).length > 0 && (
-          <span className="badge out" title="Заявки, закреплённые диспетчером вручную">
-            🔒 {Object.keys(plan.pins).length}
-          </span>
-        )}
-        <span className="clock">{plan?.now ?? '—'}</span>
+        <button className="primary" onClick={build} disabled={!!busy}>Построить план</button>
         <button onClick={step} disabled={!!busy || !plan || !hasEventsLeft}>
           Следующее событие
         </button>
         <button onClick={() => setPlaying((v) => !v)}
-                disabled={!!busy && !playing || !plan || !hasEventsLeft}>
+                disabled={(!!busy && !playing) || !plan || !hasEventsLeft}>
           {playing ? '⏸ Пауза' : '▶ Проиграть день'}
         </button>
         <select value={stability} onChange={(e) => setStability(Number(e.target.value))}
@@ -258,81 +232,63 @@ export default function App() {
           <option value={200}>стабильность 200</option>
           <option value={600}>стабильность 600</option>
         </select>
-        <button onClick={reset} disabled={!!busy}>Сброс</button>
+        <button className="ghost" onClick={reset} disabled={!!busy}>Сброс</button>
       </div>
 
-      {error && <div className="err">{error}</div>}
-      <KpiBar plan={plan} />
+      <div className="body">
+        <nav className={`rail${railOpen ? '' : ' collapsed'}`}>
+          {NAV.map((n) => (
+            <a key={n.path} href={`#${n.path}`} title={n.label}
+               className={route.screen === n.screen
+                 || (n.screen === 'engineers' && route.screen === 'engineer')
+                 || (n.screen === 'jobs' && route.screen === 'job') ? 'on' : ''}>
+              <span className="ic">{n.ic}</span>
+              <span className="label">{n.label}</span>
+              {counts[n.path] !== undefined && (
+                <span className="badge">{counts[n.path]}</span>
+              )}
+            </a>
+          ))}
+        </nav>
 
-      <div className="middle">
-        <div className="map-wrap">
-          <MapView
-            plan={plan}
-            dataset={dataset}
-            selectedJob={selectedJob}
-            selectedEngineer={selectedEngineer}
-            changedJobs={changedJobs}
-            onSelectJob={selectJob}
-            onSelectEngineer={selectEngineer}
-          />
-          <div className="legend">
-            <div className="row">
-              <span className="sw" style={{ background: '#12151c', border: '2px solid #f03e3e' }} />
-              не назначена
-            </div>
-            <div className="row">
-              <span className="sw" style={{ background: '#1f2733', border: '2px solid #f1c40f' }} />
-              склад
-            </div>
-            <div className="row">
-              <span className="sw" style={{ background: '#fff' }} />
-              изменено пересчётом
-            </div>
-          </div>
-          {busy && (
-            <div className="busy">
-              <div className="spinner" />
-              <div>{busy}</div>
-            </div>
+        <main className="screen">
+          {error && <div className="err" style={{ marginBottom: 12 }}>{error}</div>}
+
+          {route.screen === 'overview' && (
+            <OverviewScreen plan={plan} dataset={dataset} engineers={engineers}
+                            events={events} log={log} selectedJob={selectedJob}
+                            changedJobs={changedJobs}
+                            onSelectJob={(id) => go(`/jobs/${id}`)} />
           )}
-          {toast && (
-            <div className="toast">
-              <div className="hd">{toast.head}</div>
-              {toast.body && <div className="bd">{toast.body}</div>}
-            </div>
+          {route.screen === 'engineers' && (
+            <EngineersScreen plan={plan} engineers={engineers} />
           )}
-          {!plan && !busy && (
-            <div className="busy" style={{ background: 'rgba(10,13,18,0.55)' }}>
-              <div style={{ textAlign: 'center', maxWidth: 380 }}>
-                <div style={{ fontSize: 15, marginBottom: 6 }}>План на день не построен</div>
-                <div style={{ color: 'var(--text-dim)' }}>
-                  Нажмите «Построить план». Затем «Проиграть день» — увидите, как
-                  система перестраивает маршруты по ходу событий.
-                </div>
-              </div>
-            </div>
+          {route.screen === 'engineer' && route.id && (
+            <EngineerScreen id={route.id} plan={plan} engineers={engineers}
+                            jobs={jobs} dataset={dataset} selectedJob={selectedJob}
+                            onSelectJob={(id) => { setSelectedJob(id); go(`/jobs/${id}`) }} />
           )}
+          {route.screen === 'jobs' && <JobsScreen jobs={jobs} plan={plan} />}
+          {route.screen === 'job' && route.id && (
+            <JobScreen id={route.id} jobs={jobs} plan={plan} explanation={explanation}
+                       whyNot={whyNot} busy={!!busy} onPin={pin} />
+          )}
+          {route.screen === 'backlog' && (
+            <BacklogScreen plan={plan} whyNotAll={whyNotAll} />
+          )}
+          {route.screen === 'effect' && <EffectScreen compare={compare} />}
+          {route.screen === 'reference' && (
+            <ReferenceScreen dataset={dataset} engineers={engineers} />
+          )}
+        </main>
+      </div>
+
+      {toast && (
+        <div className="toast">
+          <div className="hd">{toast.head}</div>
+          {toast.body && <div className="dim" style={{ fontSize: 12.5 }}>{toast.body}</div>}
         </div>
-
-        <SidePanel
-          tab={tab} onTab={setTab}
-          plan={plan} engineers={engineers} jobs={jobs}
-          events={events} log={log}
-          explanation={explanation} whyNot={whyNot} whyNotAll={whyNotAll}
-          compare={compare}
-          selectedJob={selectedJob} selectedEngineer={selectedEngineer}
-          busy={!!busy}
-          onSelectJob={selectJob} onSelectEngineer={selectEngineer}
-          onPin={pin}
-        />
-      </div>
-
-      <Gantt
-        plan={plan} engineers={engineers}
-        selectedJob={selectedJob} selectedEngineer={selectedEngineer}
-        changedJobs={changedJobs}
-        onSelectJob={selectJob} onSelectEngineer={selectEngineer}
-      />
+      )}
     </div>
   )
 }

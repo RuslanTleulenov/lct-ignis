@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "heat-network-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "heat-network/frontend"],
+      "port": 5173
+    },
+    {
+      "name": "route-planner-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "route-planner/frontend"],
+      "port": 5174
+    },
+    {
+      "name": "slide-designer-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "slide-designer/frontend", "--", "--port", "5175"],
+      "port": 5175
+    }
+  ]
+}

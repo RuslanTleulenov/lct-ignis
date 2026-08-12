@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Базы и кеши
+*.db
+*.sqlite3
+.cache/
+
+# Окружение и секреты
+.env
+.env.local
+*.key
+
+# ОС и редакторы
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Claude Code
+.claude/settings.local.json
+
+# Сгенерированный датасет — воспроизводится командой `python data/generate.py`.
+# Снимаем игнор, если понадобится зафиксировать конкретный набор для демо.
+route-planner/data/seed/
+
+# heat-network: выгрузка OSM и сгенерированные слои воспроизводятся
+# командами fetch_osm.py / generate.py (seed фиксирован).
+heat-network/data/cache/
+
+# slide-designer: чужие шаблоны Office в репозиторий не кладём — набор
+# воспроизводится командой `python templates/fetch_local.py`.
+slide-designer/templates/deck/
+slide-designer/templates/theme/
+# Разбор шаблонов, рендеры и готовые презентации — производные артефакты.
+slide-designer/data/design/
+slide-designer/data/previews/
+slide-designer/data/out/
+slide-designer/.cache/
+
+# �������� OSM � ��������� ���� � ��������������� data/fetch_osm.py
+route-planner/data/osm/

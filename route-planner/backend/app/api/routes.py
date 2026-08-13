@@ -102,7 +102,9 @@ class PinRequest(BaseModel):
 @router.get("/health")
 def health() -> dict:
     return {"ok": True, "ready": service.ready, "version": service.version,
-            "now": min_to_hhmm(service.now), "date": service.ds.date}
+            "now": min_to_hhmm(service.now), "date": service.ds.date,
+            "staff_changed": service.staff_changed,
+            "engineers": len(service.ds.engineers)}
 
 
 @router.get("/dataset")
@@ -136,10 +138,63 @@ def dataset() -> dict:
     }
 
 
+class EngineerIn(BaseModel):
+    """Карточка инженера. Проверяется сервисом, а не только схемой:
+    ошибки должны приходить с человеческой формулировкой."""
+
+    id: str | None = None
+    name: str
+    skills: dict[str, int]
+    shift_start: str
+    shift_end: str
+    break_from: str = "12:00"
+    break_to: str = "15:00"
+    break_min: int = Field(45, ge=0, le=180)
+    vehicle_type: str = "car"
+    home_lat: float
+    home_lon: float
+    home_address: str = ""
+    onboard_equipment: list[str] = Field(default_factory=list)
+    max_overtime_min: int = Field(60, ge=0, le=240)
+
+
 @router.get("/engineers")
 def engineers() -> list[dict]:
     onboard = service.plan.onboard if service.plan else None
     return [engineer_out(service.ds, e, onboard) for e in service.ds.engineers]
+
+
+@router.post("/engineers", status_code=201)
+async def create_engineer(req: EngineerIn) -> dict:
+    try:
+        eng = await run_in_threadpool(service.upsert_engineer, req.model_dump(), None)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await hub.broadcast({"type": "staff", "version": service.version})
+    return engineer_out(service.ds, eng, service.plan.onboard if service.plan else None)
+
+
+@router.patch("/engineers/{engineer_id}")
+async def update_engineer(engineer_id: str, req: EngineerIn) -> dict:
+    if not any(e.id == engineer_id for e in service.ds.engineers):
+        raise HTTPException(404, f"Инженера {engineer_id} нет в справочнике")
+    try:
+        eng = await run_in_threadpool(service.upsert_engineer, req.model_dump(),
+                                      engineer_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await hub.broadcast({"type": "staff", "version": service.version})
+    return engineer_out(service.ds, eng, service.plan.onboard if service.plan else None)
+
+
+@router.delete("/engineers/{engineer_id}")
+async def remove_engineer(engineer_id: str) -> dict:
+    try:
+        await run_in_threadpool(service.delete_engineer, engineer_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await hub.broadcast({"type": "staff", "version": service.version})
+    return {"ok": True, "engineers": len(service.ds.engineers)}
 
 
 @router.get("/jobs")
@@ -185,7 +240,8 @@ def log() -> list[dict]:
 
 def _plan_payload(diff=None) -> dict:
     return plan_out(service.ds, service.plan, plan_id=f"plan-{service.version}",
-                    now=service.now, completed=service.completed, diff=diff)
+                    now=service.now, completed=service.completed, diff=diff) | {
+        "staff_changed": service.staff_changed}
 
 
 @router.get("/plan")

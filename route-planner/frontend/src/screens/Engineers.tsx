@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import type { Engineer, Plan } from '../api'
+import { api, type Dataset, type Engineer, type EngineerInput, type Plan } from '../api'
 import { engineerColor, VEHICLE_LABEL } from '../colors'
+import { EngineerForm } from '../components/EngineerForm'
 import { dur, initials } from '../format'
 import { go } from '../router'
 
@@ -17,12 +18,48 @@ type Sort = 'busy' | 'jobs' | 'name' | 'travel'
 interface Props {
   plan: Plan | null
   engineers: Engineer[]
+  dataset: Dataset | null
+  /** Перечитать справочник после изменения состава. */
+  onStaffChange: () => Promise<void>
 }
 
-export function EngineersScreen({ plan, engineers }: Props) {
+export function EngineersScreen({ plan, engineers, dataset, onStaffChange }: Props) {
   const [sort, setSort] = useState<Sort>('busy')
   const [query, setQuery] = useState('')
+  const [editing, setEditing] = useState<{ eng: Engineer | null } | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
   const withJobs = (plan?.routes ?? []).filter((r) => r.job_count > 0).length
+
+  async function submit(body: EngineerInput) {
+    setSaving(true)
+    setFormError(null)
+    try {
+      if (editing?.eng) await api.updateEngineer(editing.eng.id, body)
+      else await api.createEngineer(body)
+      setEditing(null)
+      await onStaffChange()
+    } catch (err) {
+      setFormError(String((err as Error).message ?? err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function remove(eng: Engineer) {
+    if (!confirm(`Удалить инженера ${eng.name} из справочника?`)) return
+    setSaving(true)
+    setFormError(null)
+    try {
+      await api.deleteEngineer(eng.id)
+      setEditing(null)
+      await onStaffChange()
+    } catch (err) {
+      setFormError(String((err as Error).message ?? err))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const rows = useMemo(() => {
     const byId = new Map((plan?.routes ?? []).map((r) => [r.engineer_id, r]))
@@ -67,9 +104,19 @@ export function EngineersScreen({ plan, engineers }: Props) {
           </span>
         </h2>
 
+        {plan?.staff_changed && (
+          <div className="stale" style={{ marginBottom: 12 }}>
+            Состав службы изменился после расчёта. Нажмите «Построить план»,
+            чтобы новые инженеры попали в маршруты.
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center' }}>
           <input placeholder="Поиск по имени или специализации" value={query}
                  onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
+          <button className="primary" onClick={() => setEditing({ eng: null })}>
+            Завести инженера
+          </button>
           <span className="spacer" />
           {idle > 0 && (
             <span className="pill warn">{idle} без заявок</span>
@@ -92,6 +139,7 @@ export function EngineersScreen({ plan, engineers }: Props) {
               <th style={{ width: 260 }}>Загрузка за день</th>
               <th className="r" style={{ width: 96 }}>Занятость</th>
               <th className="r" style={{ width: 80 }}>SLA</th>
+              <th className="r" style={{ width: 96 }}></th>
             </tr>
           </thead>
           <tbody>
@@ -135,6 +183,13 @@ export function EngineersScreen({ plan, engineers }: Props) {
                   {late > 0 ? <span className="pill danger">{late}</span>
                     : <span className="muted">—</span>}
                 </td>
+                {/* Клик по строке ведёт на карточку, поэтому действия
+                    останавливают всплытие. */}
+                <td className="r" onClick={(e) => e.stopPropagation()}>
+                  <button className="ghost sm" onClick={() => setEditing({ eng })}>
+                    Изменить
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -146,7 +201,21 @@ export function EngineersScreen({ plan, engineers }: Props) {
           <span><i style={{ background: '#3a3a44' }} />обед</span>
           <span><i style={{ background: 'var(--danger-soft)' }} />простой</span>
         </div>
+
+        {formError && !editing && <div className="err">{formError}</div>}
       </div>
+
+      {editing && dataset && (
+        <EngineerForm
+          dataset={dataset}
+          engineer={editing.eng}
+          busy={saving}
+          error={formError}
+          onSubmit={submit}
+          onClose={() => { setEditing(null); setFormError(null) }}
+          onDelete={editing.eng ? () => remove(editing.eng!) : undefined}
+        />
+      )}
     </div>
   )
 }

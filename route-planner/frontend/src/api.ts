@@ -127,6 +127,8 @@ export interface Plan {
   diff?: PlanDiff
   events?: DayEvent[]
   cost?: PinCost
+  /** Справочник инженеров менялся после расчёта — план устарел. */
+  staff_changed?: boolean
 }
 
 export interface PinCost {
@@ -147,6 +149,24 @@ export interface Engineer {
   can_carry_bulky: boolean
   home: { lat: number; lon: number; address: string }
   equipment: { id: string; name: string }[]
+  max_overtime_min: number
+}
+
+/** Карточка инженера в том виде, в каком её принимает сервис. */
+export interface EngineerInput {
+  id?: string | null
+  name: string
+  skills: Record<string, number>
+  shift_start: string
+  shift_end: string
+  break_from: string
+  break_to: string
+  break_min: number
+  vehicle_type: 'car' | 'van' | 'walk_transit'
+  home_lat: number
+  home_lon: number
+  home_address: string
+  onboard_equipment: string[]
   max_overtime_min: number
 }
 
@@ -283,6 +303,16 @@ export const api = {
   reset: () => post<{ ok: boolean; now: string }>('/plan/reset'),
   pin: (jobId: string, engineerId: string | null) =>
     post<Plan>('/plan/pin', { job_id: jobId, engineer_id: engineerId }),
+
+  createEngineer: (body: EngineerInput) => post<Engineer>('/engineers', body),
+  updateEngineer: (id: string, body: EngineerInput) =>
+    request<Engineer>(`/engineers/${id}`, {
+      method: 'PATCH', body: JSON.stringify(body),
+    }),
+  deleteEngineer: (id: string) =>
+    request<{ ok: boolean; engineers: number }>(`/engineers/${id}`, {
+      method: 'DELETE',
+    }),
   explain: (jobId: string) => request<Explanation>(`/plan/explain/${jobId}`),
   whyNot: (jobId: string) => request<WhyNot>(`/plan/why-not/${jobId}`),
   whyNotAll: () => request<WhyNot[]>('/plan/why-not'),

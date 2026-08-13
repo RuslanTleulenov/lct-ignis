@@ -21,6 +21,7 @@ from .models import (
     Warehouse,
     WorkType,
     hhmm_to_min,
+    min_to_hhmm,
 )
 
 
@@ -33,6 +34,44 @@ def _created_at_min(raw: str, plan_day: Date) -> int:
     dt = datetime.strptime(raw, "%Y-%m-%d %H:%M")
     delta_days = (dt.date() - plan_day).days
     return delta_days * 24 * 60 + dt.hour * 60 + dt.minute
+
+
+def engineer_to_raw(eng: Engineer) -> dict:
+    """Обратное преобразование — для записи справочника в snapshot.json.
+
+    Формат обязан совпадать с тем, что читает `load_dataset`, иначе
+    отредактированный справочник перестанет загружаться.
+    """
+    return {
+        "id": eng.id,
+        "name": eng.name,
+        "skills": dict(eng.skills),
+        "shift_start": min_to_hhmm(eng.shift_start),
+        "shift_end": min_to_hhmm(eng.shift_end),
+        "break_from": min_to_hhmm(eng.break_from),
+        "break_to": min_to_hhmm(eng.break_to),
+        "break_min": eng.break_min,
+        "vehicle_type": eng.vehicle_type.value,
+        "home_lat": eng.home_lat,
+        "home_lon": eng.home_lon,
+        "home_address": eng.home_address,
+        "onboard_equipment": sorted(eng.onboard_equipment),
+        "max_overtime_min": eng.max_overtime_min,
+    }
+
+
+def save_engineers(path: str | Path, engineers: list[Engineer]) -> None:
+    """Переписать в снимке только раздел инженеров, не трогая остальное.
+
+    Читаем сырой JSON и подменяем одну ветку: так заявки, справочники и
+    события гарантированно остаются нетронутыми.
+    """
+    p = Path(path)
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    raw["engineers"] = [engineer_to_raw(e) for e in engineers]
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)          # атомарная замена: снимок не окажется битым
 
 
 def load_dataset(path: str | Path) -> Dataset:

@@ -60,6 +60,16 @@ export default function App() {
     api.plan().then((p) => { setPlan(p); void refreshAux() }).catch(() => {})
   }, [])
 
+  /** Состав службы изменился: перечитываем справочник и признак устаревания. */
+  const reloadStaff = useCallback(async () => {
+    const [list, current] = await Promise.all([
+      api.engineers(),
+      api.plan().catch(() => null),
+    ])
+    setEngineers(list)
+    if (current) setPlan(current)
+  }, [])
+
   const refreshAux = useCallback(async () => {
     const [j, l] = await Promise.all([api.jobs(), api.log()])
     setJobs(j)
@@ -247,7 +257,8 @@ export default function App() {
                             onSelectJob={(id) => go(`/jobs/${id}`)} />
           )}
           {route.screen === 'engineers' && (
-            <EngineersScreen plan={plan} engineers={engineers} />
+            <EngineersScreen plan={plan} engineers={engineers} dataset={dataset}
+                             onStaffChange={reloadStaff} />
           )}
           {route.screen === 'engineer' && route.id && (
             <EngineerScreen id={route.id} plan={plan} engineers={engineers}

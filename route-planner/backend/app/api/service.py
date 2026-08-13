@@ -16,13 +16,21 @@ import threading
 from pathlib import Path
 
 from ..baseline.greedy import Comparison, compare, greedy_plan
-from ..domain.loader import load_dataset
-from ..domain.models import Job, min_to_hhmm
+from ..domain.loader import load_dataset, save_engineers
+from ..domain.models import (
+    Engineer, Job, TransportMode, hhmm_to_min, min_to_hhmm,
+)
 from ..explain.why_not import WhyNot, why_not
 from ..explain.why_this import Explanation, why_this
 from ..solver.engine import Plan, Weights, attach_geometry, solve
 from ..solver.replan import DayState, PlanDiff, project, replan, state_at
 from ..travel.provider import default_provider
+
+
+#: Границы, в которых выгружена дорожная сеть (см. data/fetch_osm.py).
+#: Дом за их пределами привяжется к ближайшей вершине графа за десятки
+#: километров, и маршрут поедет в никуда.
+SERVICE_AREA = (55.55, 37.30, 55.94, 37.88)
 
 
 class PlanningService:
@@ -58,6 +66,8 @@ class PlanningService:
             self.day_end = max(e.shift_end for e in self.ds.engineers)
             self.now = self.day_start
             self.version = 0
+            #: Справочник менялся после построения плана — план устарел.
+            self.staff_changed = False
             self.log: list[dict] = []
 
     @property
@@ -91,6 +101,7 @@ class PlanningService:
             attach_geometry(self.plan, self.ds, self.provider)
             self.morning_plan, self.morning_jobs = self.plan, jobs
             self.baseline = None
+            self.staff_changed = False
             self.version += 1
             k = self.plan.kpi
             self._note("build",
@@ -148,6 +159,137 @@ class PlanningService:
                 return
             project(self.ds, self.plan,
                     state_at(self.ds.events, self.day_end + 60, self.completed))
+
+    # -- справочник инженеров ---------------------------------------------
+
+    def upsert_engineer(self, data: dict, engineer_id: str | None = None) -> Engineer:
+        """Завести нового инженера или изменить существующего.
+
+        План при этом не пересчитывается: новый человек попадёт в маршруты со
+        следующего «Построить план». Дописывать инженера в уже прожитый день
+        нельзя — ему неоткуда взять утренний комплект инструмента и негде
+        находиться в момент врезки.
+        """
+        with self._lock:
+            eng = self._validate_engineer(data, engineer_id)
+            existing = next((i for i, e in enumerate(self.ds.engineers)
+                             if e.id == eng.id), None)
+            if engineer_id is None and existing is not None:
+                raise ValueError(f"Инженер с кодом {eng.id} уже есть")
+            if existing is None:
+                self.ds.engineers.append(eng)
+            else:
+                self.ds.engineers[existing] = eng
+            self._persist_engineers()
+            self._note("staff", f"{'Изменён' if existing is not None else 'Добавлен'} "
+                                f"инженер {eng.name} ({eng.id})")
+            return eng
+
+    def delete_engineer(self, engineer_id: str) -> None:
+        with self._lock:
+            eng = next((e for e in self.ds.engineers if e.id == engineer_id), None)
+            if eng is None:
+                raise ValueError(f"Инженера {engineer_id} нет в справочнике")
+            if len(self.ds.engineers) <= 1:
+                raise ValueError("Нельзя удалить последнего инженера службы")
+            # Удалять человека, на котором висят визиты, — значит оставить план
+            # ссылающимся в пустоту. Требуем сначала пересчитать день.
+            busy = next((r for r in (self.plan.routes if self.plan else [])
+                         if r.engineer_id == engineer_id and r.job_count), None)
+            if busy is not None:
+                raise ValueError(
+                    f"{eng.name} ведёт {busy.job_count} заявок в текущем плане. "
+                    f"Постройте план заново или передайте визиты другим.")
+            self.ds.engineers = [e for e in self.ds.engineers if e.id != engineer_id]
+            self._persist_engineers()
+            self._note("staff", f"Удалён инженер {eng.name} ({engineer_id})")
+
+    def _persist_engineers(self) -> None:
+        save_engineers(self.snapshot, self.ds.engineers)
+        self.day_start = min(e.shift_start for e in self.ds.engineers)
+        self.day_end = max(e.shift_end for e in self.ds.engineers)
+        # План построен на прежнем составе — он больше не отражает справочник.
+        self.staff_changed = self.plan is not None
+        self.version += 1
+
+    def _validate_engineer(self, data: dict, engineer_id: str | None) -> Engineer:
+        """Проверить данные до записи и вернуть готовую доменную модель.
+
+        Отдельная проверка на координаты: дом за границами выгруженной
+        дорожной сети привяжется к ближайшей вершине графа за десятки
+        километров, и маршруты поедут в никуда.
+        """
+        def fail(msg: str):
+            raise ValueError(msg)
+
+        code = (engineer_id or str(data.get("id") or "")).strip().upper()
+        if not code:
+            used = {e.id for e in self.ds.engineers}
+            n = 1
+            while f"ENG-{n:02d}" in used:
+                n += 1
+            code = f"ENG-{n:02d}"
+
+        name = str(data.get("name", "")).strip()
+        if len(name) < 3:
+            fail("Укажите ФИО инженера")
+
+        skills = {str(k): int(v) for k, v in (data.get("skills") or {}).items()}
+        if not skills:
+            fail("Нужна хотя бы одна специализация")
+        for spec, level in skills.items():
+            if spec not in self.ds.specializations:
+                fail(f"Неизвестная специализация: {spec}")
+            if not 1 <= level <= 4:
+                fail(f"Уровень по «{self.ds.specializations[spec]}» должен быть от 1 до 4")
+
+        try:
+            vehicle = TransportMode(str(data.get("vehicle_type", "car")))
+        except ValueError:
+            fail(f"Неизвестный тип транспорта: {data.get('vehicle_type')}")
+
+        try:
+            shift_start = hhmm_to_min(str(data.get("shift_start", "")))
+            shift_end = hhmm_to_min(str(data.get("shift_end", "")))
+            break_from = hhmm_to_min(str(data.get("break_from", "12:00")))
+            break_to = hhmm_to_min(str(data.get("break_to", "15:00")))
+        except (ValueError, IndexError):
+            fail("Время указывается в формате ЧЧ:ММ")
+
+        if shift_end - shift_start < 120:
+            fail("Смена короче двух часов — проверьте время")
+        break_min = int(data.get("break_min", 45))
+        if break_min < 0 or break_min > 180:
+            fail("Обед должен укладываться в 0–180 минут")
+        if break_min and not (shift_start <= break_from < break_to <= shift_end):
+            fail("Окно обеда должно быть внутри смены")
+        if break_min and break_to - break_from < break_min:
+            fail("Окно обеда короче самого обеда")
+
+        equipment = [str(q) for q in (data.get("onboard_equipment") or [])]
+        unknown = [q for q in equipment if q not in self.ds.equipment]
+        if unknown:
+            fail(f"Нет такого оборудования: {', '.join(unknown)}")
+        heavy = [self.ds.equipment[q].name for q in equipment
+                 if self.ds.equipment[q].bulky]
+        if heavy and not vehicle.can_carry_bulky:
+            fail(f"Габаритное оборудование ({', '.join(heavy)}) "
+                 f"нельзя выдать инженеру без автомобиля")
+
+        lat, lon = float(data.get("home_lat", 0)), float(data.get("home_lon", 0))
+        south, west, north, east = SERVICE_AREA
+        if not (south <= lat <= north and west <= lon <= east):
+            fail("Точка дома вне зоны обслуживания — укажите адрес в пределах города")
+
+        return Engineer(
+            id=code, name=name, skills=skills,
+            shift_start=shift_start, shift_end=shift_end,
+            break_from=break_from, break_to=break_to, break_min=break_min,
+            vehicle_type=vehicle, home_lat=lat, home_lon=lon,
+            home_address=str(data.get("home_address", "")).strip() or "адрес не указан",
+            onboard_equipment=set(equipment),
+            max_overtime_min=int(data.get("max_overtime_min", 60)),
+        )
 
     # -- ручное вмешательство диспетчера ----------------------------------
 

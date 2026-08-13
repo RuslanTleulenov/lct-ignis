@@ -37,6 +37,17 @@ export function plural(n: number, one: string, few: string, many: string): strin
   return many
 }
 
+const WEEKDAY = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб']
+const MONTH = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+
+/** «2026-08-12» -> «ср, 12 августа» — формат подзаголовка из макета. */
+export function dayLabel(iso: string): string {
+  const d = new Date(iso + 'T00:00:00')
+  if (Number.isNaN(d.getTime())) return iso
+  return `${WEEKDAY[d.getDay()]}, ${d.getDate()} ${MONTH[d.getMonth()]}`
+}
+
 export function initials(name: string): string {
   return name.split(/\s+/).slice(0, 2).map((w) => w[0] ?? '').join('').toUpperCase()
 }

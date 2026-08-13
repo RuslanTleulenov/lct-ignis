@@ -15,12 +15,13 @@ interface Props {
   onSelectJob: (id: string) => void
 }
 
+// Подписи событий заданы макетом.
 const EVENT_LABEL: Record<string, string> = {
-  job_created: 'Поступила заявка',
-  job_cancelled: 'Отмена заказчиком',
-  job_overrun: 'Превышение норматива',
-  engineer_unavailable: 'Инженер снят со смены',
-  vehicle_breakdown: 'Отказ автотранспорта',
+  job_created: 'Новая заявка',
+  job_cancelled: 'Отмена',
+  job_overrun: 'Визит затянулся',
+  engineer_unavailable: 'Больничный',
+  vehicle_breakdown: 'Поломка машины',
 }
 
 export function OverviewScreen({ plan, dataset, engineers, events, log,
@@ -30,7 +31,7 @@ export function OverviewScreen({ plan, dataset, engineers, events, log,
       <div className="card">
         <div className="empty">
           <div style={{ fontSize: 16, color: 'var(--ink)', marginBottom: 6 }}>
-            План на день не построен
+            План на день ещё не построен
           </div>
           Нажмите «Построить план», чтобы распределить заявки между инженерами
           и рассчитать маршруты.
@@ -43,19 +44,20 @@ export function OverviewScreen({ plan, dataset, engineers, events, log,
   const busy = plan.routes.filter((r) => r.job_count).map((r) => r.work_min + r.travel_min)
   const spread = busy.length ? Math.max(...busy) / Math.max(1, Math.min(...busy)) : 0
 
+  // Подписи плиток заданы макетом — строчные, без заглавных.
   const tiles = [
-    { v: `${k.jobs_assigned}/${k.jobs_total}`, l: `Назначено заявок · ${num(k.assign_rate, 1)} %`,
+    { v: `${k.jobs_assigned}/${k.jobs_total}`, l: `назначено · ${num(k.assign_rate, 1)} %`,
       tone: k.assign_rate >= 90 ? 'good' : k.assign_rate >= 75 ? 'warn' : 'bad' },
-    { v: String(k.sla_violations), l: 'Срывы SLA',
+    { v: String(k.sla_violations), l: 'нарушения SLA',
       tone: k.sla_violations === 0 ? 'good' : 'bad' },
-    { v: dur(k.travel_min), l: 'Время в пути' },
-    { v: `${num(k.travel_km)} км`, l: 'Суммарный пробег' },
-    { v: dur(k.wait_min), l: 'Простой в ожидании', tone: k.wait_min > 240 ? 'warn' : undefined },
-    { v: `${k.engineers_used}/${plan.routes.length}`, l: 'Инженеров задействовано' },
+    { v: dur(k.travel_min), l: 'время в пути' },
+    { v: `${num(k.travel_km)} км`, l: 'пробег службы' },
+    { v: dur(k.wait_min), l: 'простой в ожидании', tone: k.wait_min > 240 ? 'warn' : undefined },
+    { v: `${k.engineers_used}/${plan.routes.length}`, l: 'инженеров занято' },
     { v: `×${num(spread, 1)}`, l: busy.length
-      ? `Разброс загрузки · ${Math.min(...busy)}–${Math.max(...busy)} мин` : 'Разброс загрузки' },
-    { v: String(k.locked_done ?? 0), l: 'Визитов выполнено' },
-    { v: `${num(plan.solve_ms / 1000, 1)} с`, l: 'Время расчёта' },
+      ? `разброс загрузки (${Math.min(...busy)}–${Math.max(...busy)} мин)` : 'разброс загрузки' },
+    { v: String(k.locked_done ?? 0), l: 'визитов выполнено' },
+    { v: `${num(plan.solve_ms / 1000, 1)} с`, l: 'время расчёта' },
   ]
 
   const now = plan.now ?? '08:00'
@@ -75,7 +77,7 @@ export function OverviewScreen({ plan, dataset, engineers, events, log,
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 14 }}>
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ padding: '16px 20px 10px' }}>
-            <h2 style={{ marginBottom: 0 }}>Маршруты на карте</h2>
+            <h2 style={{ marginBottom: 0 }}>Карта маршрутов</h2>
           </div>
           <div style={{ position: 'relative', height: 460 }}>
             <MapView plan={plan} dataset={dataset} selectedJob={selectedJob}
@@ -86,7 +88,7 @@ export function OverviewScreen({ plan, dataset, engineers, events, log,
         </div>
 
         <div className="card" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <h2>События дня
+          <h2>Лента событий
             <span className="hint">{fired.length} из {events.length}</span>
           </h2>
           <div style={{ overflowY: 'auto', maxHeight: 430, marginRight: -8, paddingRight: 8 }}>
@@ -116,7 +118,11 @@ export function OverviewScreen({ plan, dataset, engineers, events, log,
       </div>
 
       <div className="card">
-        <h2>Маршруты инженеров</h2>
+        <h2>Все инженеры
+          <span className="hint">
+            кто чем занят сейчас и как загружен · клик по строке — карточка
+          </span>
+        </h2>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {plan.routes.filter((r) => r.job_count)
             .sort((a, b) => b.job_count - a.job_count)

@@ -19,12 +19,14 @@ from ..domain.models import Dataset, Engineer, Job, min_to_hhmm, service_minutes
 from ..solver.engine import Plan, Route
 from ..travel.provider import TravelTimeProvider
 
-REASON_SKILL = "недостаточная квалификация"
-REASON_VEHICLE = "требуется автотранспорт"
-REASON_EQUIPMENT = "нет необходимого оборудования"
-REASON_WINDOW = "окно доступа недостижимо"
-REASON_FULL = "смена заполнена"
-REASON_SHIFT = "выходит за пределы смены"
+# Формулировки причин заданы макетом: в сводке «Не назначено» они стоят
+# отдельными строками, и переписывать их без правки макета нельзя.
+REASON_SKILL = "Не хватает уровня квалификации"
+REASON_VEHICLE = "Нужен автомобиль (габарит)"
+REASON_EQUIPMENT = "Нет оборудования (дефицит приборов)"
+REASON_WINDOW = "Окно недостижимо по времени"
+REASON_FULL = "День инженера заполнен"
+REASON_SHIFT = "Выходит за пределы смены"
 
 
 @dataclass(slots=True)
@@ -162,16 +164,16 @@ def try_insert(ds: Dataset, route: Route, eng: Engineer, job: Job,
         # сдвигать нечего, он просто поедет специально.
         following = any(s.kind == "job" for s in route.stops[i + 1:])
         if not any(s.kind == "job" for s in route.stops):
-            detail = (f"смена свободна, выезд отдельным рейсом: "
-                      f"начало в {min_to_hhmm(start)}")
+            detail = (f"сегодня без заявок, поехал бы специально: "
+                      f"старт в {min_to_hhmm(start)}")
             push = 0
         elif push <= 0:
-            detail = f"в графике есть окно, начало в {min_to_hhmm(start)}"
+            detail = f"есть свободное окно, старт в {min_to_hhmm(start)}"
         elif following:
-            detail = (f"начало в {min_to_hhmm(start)}, последующие визиты "
-                      f"смещаются на {push} мин")
+            detail = (f"старт в {min_to_hhmm(start)}, остальные визиты "
+                      f"сдвигаются на {push} мин")
         else:
-            detail = (f"начало в {min_to_hhmm(start)}, возвращение "
+            detail = (f"старт в {min_to_hhmm(start)}, вернётся домой "
                       f"на {push} мин позже")
         candidate = Insertion(True, "", detail, start, max(0, extra), max(0, push))
         # из допустимых позиций берём ту, что меньше всего удлиняет маршрут
@@ -185,14 +187,14 @@ def try_insert(ds: Dataset, route: Route, eng: Engineer, job: Job,
     # инженер физически не успевает к закрытию окна — или успевает, но тогда
     # рассыпается остальной маршрут.
     if earliest is None:
-        return Insertion(False, REASON_FULL, "маршрут не допускает включения")
+        return Insertion(False, REASON_FULL, "Маршрут не допускает вставки")
     if earliest > latest:
         return Insertion(False, REASON_WINDOW,
-                         f"освобождается не ранее {min_to_hhmm(earliest)}, "
-                         f"работы должны начаться до {min_to_hhmm(latest)}")
+                         f"Освобождается в {min_to_hhmm(earliest)} — "
+                         f"окно закрывается в {min_to_hhmm(latest)}")
     return Insertion(False, REASON_FULL,
-                     f"может приступить в {min_to_hhmm(earliest)}, но включение "
-                     f"нарушает жёсткие окна других визитов либо выводит за смену")
+                     f"Мог бы начать в {min_to_hhmm(earliest)}, но вставка "
+                     f"ломает жёсткие окна других визитов или выводит за смену")
 
 
 # --------------------------------------------------------------------------
@@ -214,8 +216,8 @@ def why_not(ds: Dataset, plan: Plan, job: Job,
             spec = ds.specializations.get(job.specialization, job.specialization)
             result.blockers.append(Blocker(
                 eng.id, eng.name, REASON_SKILL,
-                f"{spec}: уровень {level or 'отсутствует'}, "
-                f"требуется {job.min_level}"))
+                f"Уровень {level or 0} по «{spec}», "
+                f"заявке требуется минимум уровень {job.min_level}"))
             continue
 
         if needs_car and not eng.vehicle_type.can_carry_bulky:
@@ -223,15 +225,17 @@ def why_not(ds: Dataset, plan: Plan, job: Job,
                      if ds.equipment[q].bulky]
             result.blockers.append(Blocker(
                 eng.id, eng.name, REASON_VEHICLE,
-                f"перевозка «{', '.join(bulky)}» требует автотранспорта"))
+                f"Нужно везти «{', '.join(bulky)}», а инженер без автомобиля"))
             continue
 
         missing = set(job.required_equipment) - set(onboard.get(eng.id, ()))
         if missing:
             names = [ds.equipment[q].name for q in sorted(missing)]
+            scarce = [q for q in sorted(missing) if ds.equipment[q].is_rare]
+            tail = (" — все экземпляры выданы другим" if scarce else "")
             result.blockers.append(Blocker(
                 eng.id, eng.name, REASON_EQUIPMENT,
-                f"не закреплено: {', '.join(names)}"))
+                f"Нет: {', '.join(names)}{tail}"))
             continue
 
         ins = try_insert(ds, route, eng, job, provider)

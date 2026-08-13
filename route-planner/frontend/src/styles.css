@@ -169,6 +169,25 @@ input::placeholder { color: var(--ink-30); }
   display: flex; flex-direction: column; gap: 2px;
 }
 .rail.collapsed { flex-basis: 60px; }
+
+/* Плитки справочников: оборудование и склады показываются карточками. */
+.tiles {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+.tile {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: 14px 16px;
+}
+.tile.accent { border-color: var(--accent); }
+
+/* Клетка матрицы совместимости: пустая — контурный квадрат, заполненная —
+   цветной. Точка вместо квадрата в макете читается хуже на 17 колонках. */
+.cell-box {
+  display: inline-block; width: 16px; height: 16px; border-radius: 5px;
+  border: 1px solid var(--line-2); vertical-align: middle;
+}
 .rail a {
   display: flex; align-items: center; gap: 11px;
   padding: 9px 12px; border-radius: var(--r-md);

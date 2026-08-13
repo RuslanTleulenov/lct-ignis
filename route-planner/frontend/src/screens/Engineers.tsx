@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { Engineer, Plan } from '../api'
 import { engineerColor, VEHICLE_LABEL } from '../colors'
-import { dur, initials, plural } from '../format'
+import { dur, initials } from '../format'
 import { go } from '../router'
 
 /**
@@ -22,6 +22,7 @@ interface Props {
 export function EngineersScreen({ plan, engineers }: Props) {
   const [sort, setSort] = useState<Sort>('busy')
   const [query, setQuery] = useState('')
+  const withJobs = (plan?.routes ?? []).filter((r) => r.job_count > 0).length
 
   const rows = useMemo(() => {
     const byId = new Map((plan?.routes ?? []).map((r) => [r.engineer_id, r]))
@@ -59,14 +60,15 @@ export function EngineersScreen({ plan, engineers }: Props) {
   return (
     <div className="stack">
       <div className="card">
-        <h2>Инженерный состав
+        <h2>Инженеры
           <span className="hint">
-            {engineers.length} {plural(engineers.length, 'человек', 'человека', 'человек')}
+            {withJobs} из {engineers.length} с заявками · {engineers.length - withJobs} без
+            — показаны явно. Строка ведёт на карточку.
           </span>
         </h2>
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center' }}>
-          <input placeholder="Фамилия или специализация" value={query}
+          <input placeholder="Поиск по имени или специализации" value={query}
                  onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
           <span className="spacer" />
           {idle > 0 && (
@@ -87,9 +89,9 @@ export function EngineersScreen({ plan, engineers }: Props) {
               <th style={{ width: 130 }}>Транспорт</th>
               <th style={{ width: 110 }}>Смена</th>
               <th className="r" style={{ width: 70 }}>Заявок</th>
-              <th style={{ width: 260 }}>Структура рабочего времени</th>
+              <th style={{ width: 260 }}>Загрузка за день</th>
               <th className="r" style={{ width: 96 }}>Занятость</th>
-              <th className="r" style={{ width: 100 }}>Срыв SLA</th>
+              <th className="r" style={{ width: 80 }}>SLA</th>
             </tr>
           </thead>
           <tbody>

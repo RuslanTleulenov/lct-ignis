@@ -432,6 +432,10 @@ def gen_jobs(rnd: random.Random, n: int, day: Date) -> list[dict]:
     return jobs
 
 
+#: Название типа работ по идентификатору — для подписей событий.
+WORK_BY_ID = {w[0]: w[1] for w in WORK_TYPES}
+
+
 def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
                day: Date) -> list[dict]:
     """События рабочего дня для симулятора перепланирования.
@@ -444,12 +448,12 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
     # 1. Заявки, поступившие после начала дня
     for j in jobs:
         if not j["known_at_day_start"]:
-            kind = "аварийная заявка" if j["priority"] == "P1" else "заявка"
             events.append({
                 "at": j["created_at"][-5:],
                 "type": "job_created",
                 "payload": j["id"],
-                "comment": f"Поступила {kind} {j['priority']}: {j['customer']}",
+                "comment": f"{j['priority']} · {j['customer']} — "
+                           f"{WORK_BY_ID[j['work_type_id']]}",
             })
 
     # 2. Визиты, которые затянулись
@@ -460,8 +464,7 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
             "at": f"{rnd.randint(10, 15):02d}:{rnd.choice(['00', '15', '30', '45'])}",
             "type": "job_overrun",
             "payload": f"{j['id']}:+{extra}",
-            "comment": f"{j['id']}, {j['customer']}: превышение норматива "
-                       f"на {extra} мин",
+            "comment": f"{j['customer']}: +{extra} мин, работы сложнее ожидаемого",
         })
 
     # 3. Отмена клиентом
@@ -470,7 +473,7 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
             "at": f"{rnd.randint(9, 14):02d}:{rnd.choice(['00', '20', '40'])}",
             "type": "job_cancelled",
             "payload": j["id"],
-            "comment": f"Отмена заказчиком: {j['customer']}",
+            "comment": f"{j['customer']} отменил визит",
         })
 
     # 4. Инженер выбыл: болезнь и поломка авто — самые болезненные сценарии
@@ -479,8 +482,7 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
         "at": "08:10",
         "type": "engineer_unavailable",
         "payload": sick["id"],
-        "comment": f"{sick['name']} снят со смены по болезни, "
-                   f"заявки подлежат перераспределению",
+        "comment": f"{sick['name']} на больничном — заявки надо перераспределить",
     })
     with_car = [e for e in engineers
                 if e["vehicle_type"] != "walk_transit" and e["id"] != sick["id"]]
@@ -490,8 +492,7 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
             "at": "13:20",
             "type": "vehicle_breakdown",
             "payload": broken["id"],
-            "comment": f"{broken['name']}: отказ автотранспорта, "
-                       f"переход на пеший режим",
+            "comment": f"{broken['name']}: сломался автомобиль, дальше пешком",
         })
 
     events.sort(key=lambda e: e["at"])

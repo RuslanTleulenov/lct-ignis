@@ -98,8 +98,8 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
         <>
           {/* ---- лента дня ---- */}
           <div className="card">
-            <h2>График работы
-              <span className="hint">смена в маршруте {route.start}–{route.end}</span>
+            <h2>Лента дня
+              <span className="hint">маршрут {route.start}–{route.end}</span>
             </h2>
             <Timeline route={route} plan={plan} selected={selectedJob}
                       onSelect={onSelectJob} />
@@ -109,7 +109,7 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
             {/* ---- карта ---- */}
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px 10px' }}>
-                <h2 style={{ marginBottom: 0 }}>Маршрут движения
+                <h2 style={{ marginBottom: 0 }}>Маршрут
                   <span className="hint">
                     {num(route.travel_km, 1)} км · {dur(route.travel_min)} в пути
                   </span>
@@ -126,9 +126,7 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
             <div className="stack">
               {/* ---- загрузка ---- */}
               <div className="card">
-                <h2>Структура рабочего времени
-                  <span className="hint">занятость {dur(busy)}</span>
-                </h2>
+                <h2>Загрузка<span className="hint">занятость {dur(busy)}</span></h2>
                 <div className="load">
                   <span className="work" style={{ width: `${route.work_min / total * 100}%` }} />
                   <span className="travel" style={{ width: `${route.travel_min / total * 100}%` }} />
@@ -151,7 +149,7 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
 
               {/* ---- оборудование ---- */}
               <div className="card">
-                <h2>Закреплённое оборудование
+                <h2>Оборудование на руках
                   <span className="hint">
                     {eng.equipment.length}{' '}
                     {plural(eng.equipment.length, 'позиция', 'позиции', 'позиций')}
@@ -168,16 +166,16 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
 
           {/* ---- визиты ---- */}
           <div className="card">
-            <h2>Маршрутный лист</h2>
+            <h2>Визиты по порядку</h2>
             <table className="grid">
               <thead>
                 <tr>
-                  <th style={{ width: 28 }}>№</th>
-                  <th style={{ width: 108 }}>Плановое время</th>
-                  <th>Объект и вид работ</th>
-                  <th style={{ width: 160 }}>Окно доступа</th>
-                  <th className="r" style={{ width: 130 }}>Переезд</th>
-                  <th className="r" style={{ width: 110 }}>Состояние</th>
+                  <th style={{ width: 28 }}>#</th>
+                  <th style={{ width: 118 }}>Время визита</th>
+                  <th>Заказчик и работа</th>
+                  <th style={{ width: 150 }}>Окно клиента</th>
+                  <th className="r" style={{ width: 120 }}>От предыдущей</th>
+                  <th className="r" style={{ width: 110 }}>Статус</th>
                 </tr>
               </thead>
               <tbody>
@@ -220,9 +218,9 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
                       </td>
                       <td className="r">
                         {s.sla_late_min > 0
-                          ? <span className="pill danger">срыв SLA {s.sla_late_min} мин</span>
-                          : done ? <span className="pill ok">выполнена</span>
-                            : <span className="muted" style={{ fontSize: 12 }}>запланирована</span>}
+                          ? <span className="pill danger">SLA +{s.sla_late_min}</span>
+                          : done ? <span className="pill ok">выполнено</span>
+                            : <span className="muted" style={{ fontSize: 12 }}>впереди</span>}
                       </td>
                     </tr>
                   )

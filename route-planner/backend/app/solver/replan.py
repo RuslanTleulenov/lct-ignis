@@ -167,10 +167,9 @@ class PlanDiff:
 
     def summary(self) -> str:
         total = len(self.affected) + len(self.untouched)
-        return (f"Передано другим исполнителям: {len(self.moved)}, "
-                f"включено в план: {len(self.added)}, "
-                f"отложено: {len(self.removed)}, без изменений: {self.kept}. "
-                f"Затронуто инженеров: {len(self.affected)} из {total}")
+        return (f"перенесено {len(self.moved)}, добавлено {len(self.added)}, "
+                f"снято {len(self.removed)}, без изменений {self.kept}; "
+                f"затронуто инженеров {len(self.affected)} из {total}")
 
 
 def diff_plans(prev_assignment: dict[str, str], new_plan: Plan,

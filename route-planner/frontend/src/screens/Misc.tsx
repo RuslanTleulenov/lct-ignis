@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Compare, Dataset, Engineer, Plan, WhyNot } from '../api'
 import { PRIORITY_COLOR, VEHICLE_LABEL } from '../colors'
-import { plural } from '../format'
 import { go } from '../router'
 
 /* ------------------------------------------------------------- Не назначено */
@@ -28,16 +27,14 @@ export function BacklogScreen({ plan, whyNotAll }: {
   return (
     <div className="stack">
       <div className="card">
-        <h2>Заявки без исполнителя
+        <h2>Не назначено
           <span className="hint">
-            {plan.unassigned.length}{' '}
-            {plural(plan.unassigned.length, 'заявка', 'заявки', 'заявок')} к переносу
+            {plan.unassigned.length} из {plan.kpi.jobs_total}
           </span>
         </h2>
         <p className="dim">
-          Спрос превышает ресурс службы. Ниже указано, что именно ограничивает
-          назначение по каждой заявке: квалификация, оборудование, транспорт или
-          загрузка исполнителей.
+          Управленческий инструмент: из разбора видно, чего службе не хватает —
+          людей, приборов или машин.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
           {Object.entries(summary.reasons).sort((a, b) => b[1] - a[1]).map(([r, n]) => (
@@ -100,38 +97,54 @@ export function EffectScreen({ compare }: { compare: Compare | null }) {
   return (
     <div className="stack">
       <div className="card">
-        <h2>Эффект против ручного планирования</h2>
-        <p className="muted" style={{ fontSize: 12 }}>{compare.note}</p>
+        <h2>Эффект</h2>
+        <p className="muted" style={{ fontSize: 12 }}>
+          Сравнение с ручным планированием на тех же {compare.optimized_kpi.jobs_total}{' '}
+          утренних заявках.
+        </p>
+        {/* Колонок две, без отдельного «Эффекта»: в макете величины стоят
+            рядом, и разница читается сама. Строка про SLA несёт пояснение
+            прямо под названием — она единственная, где мы хуже. */}
         <table className="grid" style={{ marginTop: 10 }}>
           <thead>
             <tr>
               <th>Показатель</th>
-              <th className="r" style={{ width: 130 }}>Вручную</th>
-              <th className="r" style={{ width: 130 }}>Оптимизатор</th>
-              <th className="r" style={{ width: 130 }}>Эффект</th>
+              <th className="r" style={{ width: 170 }}>Сервис</th>
+              <th className="r" style={{ width: 170 }}>Ручной план</th>
             </tr>
           </thead>
           <tbody>
-            {compare.rows.map((r, i) => (
-              <tr key={r.label}>
-                <td style={{ fontWeight: i === 0 ? 700 : 400,
-                             color: i === 0 ? 'var(--ink)' : undefined }}>{r.label}</td>
-                <td className="r num dim">{r.manual}</td>
-                <td className="r num" style={{ fontWeight: i === 0 ? 700 : 400 }}>{r.optimized}</td>
-                <td className="r num" style={{
-                  color: r.effect.includes('✓') ? 'var(--ok)'
-                    : r.effect.startsWith('+') ? 'var(--danger)' : undefined,
-                  fontWeight: r.effect.includes('✓') ? 700 : 400,
-                }}>{r.effect}</td>
-              </tr>
-            ))}
+            {compare.rows.map((r, i) => {
+              const lead = i === 0
+              const worse = r.effect.startsWith('+') && !r.effect.includes('✓')
+              return (
+                <tr key={r.label} style={lead ? { background: 'var(--accent-soft)' } : undefined}>
+                  <td style={{ fontWeight: lead ? 700 : 400,
+                               color: lead ? 'var(--ink)' : undefined }}>
+                    {r.label}
+                    {worse && (
+                      <div style={{ color: 'var(--danger)', fontSize: 11.5, marginTop: 2 }}>
+                        У ручного плана меньше потому, что он не взял
+                        {' '}{compare.baseline_kpi.jobs_unassigned}{' '}
+                        неудобных заявок вовсе
+                      </div>
+                    )}
+                  </td>
+                  <td className="r num" style={{
+                    fontWeight: 700,
+                    color: worse ? 'var(--danger)' : lead ? 'var(--accent)' : 'var(--ink)',
+                  }}>{r.optimized}</td>
+                  <td className="r num dim">{r.manual}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <div className="card">
-          <h2>Методика сравнения</h2>
+          <h2>Как считался baseline</h2>
           <p className="dim">
             За основу принято ручное планирование: заявки разбираются по срочности
             окна доступа и передаются ближайшему подходящему инженеру, ранее
@@ -156,15 +169,21 @@ export function EffectScreen({ compare }: { compare: Compare | null }) {
 
 /* -------------------------------------------------------------- Справочники */
 
-export function ReferenceScreen({ dataset, engineers }: {
-  dataset: Dataset | null; engineers: Engineer[]
+export function ReferenceScreen({ dataset, engineers, plan }: {
+  dataset: Dataset | null; engineers: Engineer[]; plan: Plan | null
 }) {
-  const [tab, setTab] = useState<'types' | 'matrix' | 'equip' | 'wh' | 'staff'>('types')
+  const [tab, setTab] = useState<'types' | 'equip' | 'wh' | 'staff'>('types')
   if (!dataset) return <div className="empty">Загрузка…</div>
 
+  /** На какой склад инженер заезжает утром — из построенного плана. */
+  const pickupAt = (engineerId: string) =>
+    plan?.routes.find((r) => r.engineer_id === engineerId)?.pickup_warehouse ?? null
+
+  // Четыре вкладки, как в макете: матрица совместимости живёт внутри
+  // «Типов работ», а не отдельным разделом.
   const tabs = [
-    ['types', 'Виды работ'], ['matrix', 'Матрица совместимости'],
-    ['equip', 'Оборудование'], ['wh', 'Склады'], ['staff', 'Инженерный состав'],
+    ['types', 'Типы работ'], ['equip', 'Оборудование'],
+    ['wh', 'Склады'], ['staff', 'Состав службы'],
   ] as const
 
   return (
@@ -177,40 +196,23 @@ export function ReferenceScreen({ dataset, engineers }: {
           ))}
         </div>
 
+        {/* Вкладка «Типы работ» — это и есть матрица совместимости: в макете
+            она не вынесена отдельно, а служит основным видом справочника. */}
         {tab === 'types' && (
-          <table className="grid">
-            <thead><tr>
-              <th>Вид работ</th><th style={{ width: 230 }}>Специализация</th>
-              <th className="r" style={{ width: 130 }}>Квалификация</th>
-              <th className="r" style={{ width: 140 }}>Норматив времени</th>
-            </tr></thead>
-            <tbody>
-              {dataset.work_types.map((w) => (
-                <tr key={w.id}>
-                  <td><b>{w.name}</b>
-                    <div className="muted" style={{ fontSize: 11.5 }}>
-                      {w.equipment.map((q) => q.name).join(', ')}
-                    </div>
-                  </td>
-                  <td className="dim">{dataset.specializations[w.specialization]}</td>
-                  <td className="r num">не ниже {w.min_level} уровня</td>
-                  <td className="r num">{w.base_duration_min} мин</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-
-        {tab === 'matrix' && (
           <div style={{ overflowX: 'auto' }}>
+            <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+              Матрица «работа → оборудование». Жёлтым — дефицитные приборы:
+              по 2 экземпляра на службу.
+            </p>
             <table className="grid" style={{ fontSize: 11.5 }}>
               <thead><tr>
-                <th style={{ minWidth: 240 }}>Вид работ</th>
+                <th style={{ minWidth: 240 }}>Тип работ</th>
+                <th className="r" style={{ width: 74 }}>Мин. ур.</th>
                 {dataset.equipment.map((q) => (
                   <th key={q.id} className="r" style={{ width: 34 }}>
                     <span title={q.name} style={{
                       writingMode: 'vertical-rl', transform: 'rotate(180deg)',
-                      whiteSpace: 'nowrap', display: 'inline-block', height: 116,
+                      whiteSpace: 'nowrap', display: 'inline-block', height: 128,
                       color: q.rare ? 'var(--accent)' : undefined,
                     }}>{q.name}</span>
                   </th>
@@ -221,13 +223,17 @@ export function ReferenceScreen({ dataset, engineers }: {
                   const need = new Set(w.equipment.map((q) => q.id))
                   return (
                     <tr key={w.id}>
-                      <td>{w.name}</td>
+                      <td>
+                        <b>{dataset.specializations[w.specialization]}</b>
+                        <div className="muted" style={{ fontSize: 11.5 }}>{w.name}</div>
+                      </td>
+                      <td className="r num">{w.min_level}</td>
                       {dataset.equipment.map((q) => (
                         <td key={q.id} className="r">
-                          {need.has(q.id) && (
-                            <span className="dot" style={{
-                              background: q.bulky ? 'var(--warn)' : 'var(--accent)' }} />
-                          )}
+                          <span className="cell-box" style={need.has(q.id) ? {
+                            background: q.rare ? 'var(--accent)' : 'var(--info)',
+                            borderColor: 'transparent',
+                          } : undefined} />
                         </td>
                       ))}
                     </tr>
@@ -236,55 +242,64 @@ export function ReferenceScreen({ dataset, engineers }: {
               </tbody>
             </table>
             <div className="legend" style={{ marginTop: 10 }}>
-              <span><i style={{ background: 'var(--accent)' }} />требуется</span>
-              <span><i style={{ background: 'var(--warn)' }} />габаритное, необходим автотранспорт</span>
-              <span style={{ color: 'var(--accent)' }}>жёлтым выделены приборы ограниченного парка</span>
+              <span><i style={{ background: 'var(--info)' }} />требуется</span>
+              <span><i style={{ background: 'var(--accent)' }} />дефицитный прибор</span>
             </div>
           </div>
         )}
 
+        {/* Оборудование и склады в макете — плитки, а не таблицы: позиций
+            немного, а дефицит должен бросаться в глаза. */}
         {tab === 'equip' && (
-          <table className="grid">
-            <thead><tr>
-              <th>Наименование</th><th style={{ width: 180 }}>Место хранения</th>
-              <th className="r" style={{ width: 120 }}>В парке</th>
-              <th className="r" style={{ width: 180 }}>Требования к перевозке</th>
-            </tr></thead>
-            <tbody>
-              {dataset.equipment.map((q) => (
-                <tr key={q.id}>
-                  <td><b>{q.name}</b>
-                    {q.rare && <span className="pill accent" style={{ marginLeft: 8 }}>
-                      ограниченный парк</span>}
-                  </td>
-                  <td className="dim">{q.stock === 'all'
-                    ? 'на всех складах' : `централизованно, склад ${q.stock}`}</td>
-                  <td className="r num">{q.units} шт.</td>
-                  <td className="r">{q.bulky
-                    ? <span className="pill warn">только автотранспортом</span>
-                    : <span className="muted">без ограничений</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="tiles">
+            {dataset.equipment.map((q) => (
+              <div key={q.id} className={`tile${q.rare ? ' accent' : ''}`}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>{q.name}</div>
+                  <div className="muted" style={{ fontSize: 11.5 }}>
+                    {q.rare ? 'дефицит — узкое место службы'
+                      : q.bulky ? 'габарит: только с машиной' : 'в достатке'}
+                  </div>
+                </div>
+                <div className="num" style={{
+                  fontSize: 22, fontWeight: 700, whiteSpace: 'nowrap',
+                  color: q.rare ? 'var(--accent)' : 'var(--ink)',
+                }}>
+                  {q.units}<span style={{ fontSize: 12, marginLeft: 3 }} className="muted">шт</span>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
 
         {tab === 'wh' && (
-          <table className="grid">
-            <thead><tr>
-              <th>Наименование</th><th>Адрес</th>
-              <th className="r" style={{ width: 160 }}>Режим работы</th>
-            </tr></thead>
-            <tbody>
-              {dataset.warehouses.map((w) => (
-                <tr key={w.id}>
-                  <td><b>{w.name}</b> <span className="muted">{w.id}</span></td>
-                  <td className="dim">{w.address}</td>
-                  <td className="r num">{w.open[0]}–{w.open[1]}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="tiles">
+            {dataset.warehouses.map((w) => {
+              const crew = engineers.filter((e) => pickupAt(e.id) === w.id)
+              return (
+                <div key={w.id} className="tile" style={{ flexDirection: 'column',
+                  alignItems: 'stretch', gap: 10 }}>
+                  <span className="mark" style={{ width: 32, height: 32, fontSize: 13 }}>С</span>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 15 }}>{w.name}</div>
+                    <div className="muted" style={{ fontSize: 12 }}>{w.address}</div>
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <span className="muted">утренний заезд: </span>
+                    <b>{crew.length} инж.</b>
+                    {crew.length > 0 && (
+                      <div className="muted" style={{ marginTop: 2 }}>
+                        {crew.map((e) => e.name).join(', ')}
+                      </div>
+                    )}
+                  </div>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    режим работы {w.open[0]}–{w.open[1]}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         )}
 
         {tab === 'staff' && (

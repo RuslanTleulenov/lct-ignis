@@ -3,6 +3,7 @@ import {
   api, type Compare, type DayEvent, type Dataset, type Engineer,
   type Explanation, type Job, type LogEntry, type Plan, type WhyNot,
 } from './api'
+import { dayLabel } from './format'
 import { go, useRoute } from './router'
 import { OverviewScreen } from './screens/Overview'
 import { EngineersScreen } from './screens/Engineers'
@@ -10,13 +11,15 @@ import { EngineerScreen } from './screens/Engineer'
 import { JobsScreen, JobScreen } from './screens/Jobs'
 import { BacklogScreen, EffectScreen, ReferenceScreen } from './screens/Misc'
 
+// Состав и подписи разделов заданы макетом — менять их нельзя без правки
+// макета, иначе интерфейс и прототип расходятся.
 const NAV = [
-  { path: '/', screen: 'overview', ic: '◉', label: 'Сводка дня' },
-  { path: '/engineers', screen: 'engineers', ic: '☰', label: 'Инженеры' },
-  { path: '/jobs', screen: 'jobs', ic: '✦', label: 'Заявки' },
-  { path: '/backlog', screen: 'backlog', ic: '⚠', label: 'Отложенные' },
-  { path: '/effect', screen: 'effect', ic: '↗', label: 'Оценка эффекта' },
-  { path: '/reference', screen: 'reference', ic: '▤', label: 'Справочники' },
+  { path: '/', screen: 'overview', ic: '◎', label: 'Обзор дня' },
+  { path: '/engineers', screen: 'engineers', ic: '⚑', label: 'Инженеры' },
+  { path: '/jobs', screen: 'jobs', ic: '▤', label: 'Заявки' },
+  { path: '/backlog', screen: 'backlog', ic: '!', label: 'Не назначено' },
+  { path: '/effect', screen: 'effect', ic: '↗', label: 'Эффект' },
+  { path: '/reference', screen: 'reference', ic: '⊞', label: 'Справочники' },
 ] as const
 
 export default function App() {
@@ -41,9 +44,12 @@ export default function App() {
   const [playing, setPlaying] = useState(false)
   const [railOpen, setRailOpen] = useState(true)
 
-  const [preset, setPreset] = useState('default')
-  const [timeLimit, setTimeLimit] = useState(15)
-  const [stability, setStability] = useState(200)
+  // В макете шапка содержит только четыре кнопки: критерий оптимизации,
+  // лимит расчёта и вес стабильности в интерфейс не вынесены. Бэкенд их
+  // по-прежнему принимает, здесь закреплены значения по умолчанию.
+  const preset = 'default'
+  const timeLimit = 15
+  const stability = 200
 
   const busyRef = useRef(false)
 
@@ -189,7 +195,7 @@ export default function App() {
           <span>
             <span className="name">Выездная служба</span>
             <span className="sub">{dataset
-              ? `${dataset.date} · ${dataset.counts.jobs} заявок · ${dataset.counts.engineers} инженеров`
+              ? `диспетчерская · Москва · ${dayLabel(dataset.date)}`
               : 'загрузка…'}</span>
           </span>
         </a>
@@ -204,35 +210,15 @@ export default function App() {
 
         <span className="spacer" />
 
-        <select value={preset} onChange={(e) => setPreset(e.target.value)}
-                title="Критерий оптимизации">
-          <option value="default">Сбалансированный план</option>
-          <option value="sla">Приоритет соблюдения SLA</option>
-          <option value="travel">Минимум пробега</option>
-          <option value="balance">Равномерная загрузка</option>
-        </select>
-        <select value={timeLimit} onChange={(e) => setTimeLimit(Number(e.target.value))}
-                title="Ограничение времени расчёта">
-          <option value={5}>5 с</option>
-          <option value={15}>15 с</option>
-          <option value={30}>30 с</option>
-        </select>
         <button className="primary" onClick={build} disabled={!!busy}>Построить план</button>
         <button onClick={step} disabled={!!busy || !plan || !hasEventsLeft}>
-          Следующее событие
+          Следующее событие ›
         </button>
         <button onClick={() => setPlaying((v) => !v)}
                 disabled={(!!busy && !playing) || !plan || !hasEventsLeft}>
-          {playing ? 'Приостановить' : 'Смоделировать день'}
+          {playing ? '❚❚ Пауза' : '▶ Проиграть день'}
         </button>
-        <select value={stability} onChange={(e) => setStability(Number(e.target.value))}
-                title="Насколько дорого обходится передача визита другому исполнителю">
-          <option value={0}>Стабильность: не учитывать</option>
-          <option value={80}>Стабильность: низкая</option>
-          <option value={200}>Стабильность: средняя</option>
-          <option value={600}>Стабильность: высокая</option>
-        </select>
-        <button className="ghost" onClick={reset} disabled={!!busy}>Сбросить</button>
+        <button className="ghost" onClick={reset} disabled={!!busy}>Сброс</button>
       </div>
 
       <div className="body">
@@ -278,7 +264,7 @@ export default function App() {
           )}
           {route.screen === 'effect' && <EffectScreen compare={compare} />}
           {route.screen === 'reference' && (
-            <ReferenceScreen dataset={dataset} engineers={engineers} />
+            <ReferenceScreen dataset={dataset} engineers={engineers} plan={plan} />
           )}
         </main>
       </div>

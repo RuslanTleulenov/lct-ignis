@@ -234,6 +234,26 @@ input::placeholder { color: var(--ink-30); }
 
 button.sm { padding: 5px 12px; font-size: 12px; }
 
+/* Параметры расчёта — за отдельной кнопкой, чтобы не ломать ряд шапки. */
+.params { position: relative; }
+.params-catch { position: fixed; inset: 0; z-index: 24; }
+.params-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 25;
+  width: 280px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  border-radius: var(--r-md); padding: 14px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
+}
+.topbar button.ghost.on { border-color: var(--accent); color: var(--accent); }
+
+/* Поля, выведенные из справочника: их не вводят, а показывают. */
+.derived {
+  display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px;
+  padding: 10px 14px; border-radius: var(--r-md);
+  background: var(--sunk); border: 1px solid var(--line);
+  font-size: 12px; color: var(--ink-75);
+}
+
 .stale {
   display: flex; align-items: center; gap: 12px;
   background: var(--accent-soft); border: 1px solid var(--accent);

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import type { Explanation, Job, Plan, WhyNot } from '../api'
+import type { Dataset, Explanation, Job, JobInput, Plan, WhyNot } from '../api'
 import { engineerColor, PRIORITY_COLOR, PRIORITY_LABEL } from '../colors'
+import { JobForm } from '../components/JobForm'
 import { initials, num } from '../format'
 import { go } from '../router'
 
@@ -10,10 +11,32 @@ const STATUS_LABEL: Record<string, string> = {
   unassigned: 'не назначена', new: 'новая',
 }
 
-export function JobsScreen({ jobs, plan }: { jobs: Job[]; plan: Plan | null }) {
+export function JobsScreen({ jobs, plan, dataset, onJobAdded }: {
+  jobs: Job[]
+  plan: Plan | null
+  dataset: Dataset | null
+  /** Принять заявку: сервис пересчитает день сам и вернёт новый план. */
+  onJobAdded: (body: JobInput) => Promise<void>
+}) {
   const [status, setStatus] = useState('all')
   const [prio, setPrio] = useState('all')
   const [query, setQuery] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+
+  async function submit(body: JobInput) {
+    setSaving(true)
+    setFormError(null)
+    try {
+      await onJobAdded(body)
+      setCreating(false)
+    } catch (err) {
+      setFormError(String((err as Error).message ?? err))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -39,6 +62,9 @@ export function JobsScreen({ jobs, plan }: { jobs: Job[]; plan: Plan | null }) {
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
           <input placeholder="Заказчик, тип работ, район" value={query}
                  onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
+          <button className="primary" onClick={() => setCreating(true)}>
+            Новая заявка
+          </button>
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="all">все статусы</option>
             {Object.entries(byStatus).map(([s, n]) => (
@@ -109,6 +135,17 @@ export function JobsScreen({ jobs, plan }: { jobs: Job[]; plan: Plan | null }) {
         </table>
         {!rows.length && <div className="empty">Ничего не найдено</div>}
       </div>
+
+      {creating && dataset && (
+        <JobForm
+          dataset={dataset}
+          now={plan?.now ?? dataset.day[0]}
+          busy={saving}
+          error={formError}
+          onSubmit={submit}
+          onClose={() => { setCreating(false); setFormError(null) }}
+        />
+      )}
     </div>
   )
 }

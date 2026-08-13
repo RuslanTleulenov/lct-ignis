@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import maplibregl from 'maplibre-gl'
+import { useEffect, useState } from 'react'
 import type { Dataset, Engineer, EngineerInput } from '../api'
+import { outsideArea, PointPicker } from './PointPicker'
 
 /**
  * Карточка инженера: заведение и правка.
@@ -13,9 +13,6 @@ import type { Dataset, Engineer, EngineerInput } from '../api'
 const VEHICLES: [EngineerInput['vehicle_type'], string][] = [
   ['car', 'Легковой'], ['van', 'Фургон'], ['walk_transit', 'Пешком + метро'],
 ]
-
-//: Границы зоны обслуживания — те же, что проверяет сервис.
-const AREA = { south: 55.55, west: 37.30, north: 55.94, east: 37.88 }
 
 const EMPTY: EngineerInput = {
   name: '', skills: {}, shift_start: '09:00', shift_end: '18:00',
@@ -70,8 +67,7 @@ export function EngineerForm({
     }
   }, [canCarryBulky, form.onboard_equipment, dataset.equipment])
 
-  const outside = form.home_lat < AREA.south || form.home_lat > AREA.north
-    || form.home_lon < AREA.west || form.home_lon > AREA.east
+  const outside = outsideArea(form.home_lat, form.home_lon)
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -189,8 +185,8 @@ export function EngineerForm({
             <input value={form.home_address} placeholder="Улица, дом"
                    onChange={(e) => set('home_address', e.target.value)} />
           </label>
-          <HomePicker lat={form.home_lat} lon={form.home_lon}
-                      onPick={(lat, lon) => setForm((f) => ({ ...f, home_lat: lat, home_lon: lon }))} />
+          <PointPicker lat={form.home_lat} lon={form.home_lon}
+                       onPick={(lat, lon) => setForm((f) => ({ ...f, home_lat: lat, home_lon: lon }))} />
           <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
             Кликните по карте, чтобы поставить точку. Сейчас{' '}
             <span className="num">{form.home_lat.toFixed(5)}, {form.home_lon.toFixed(5)}</span>
@@ -218,55 +214,4 @@ export function EngineerForm({
       </div>
     </div>
   )
-}
-
-/** Мини-карта: одна перетаскиваемая точка, ставится кликом. */
-function HomePicker({ lat, lon, onPick }: {
-  lat: number; lon: number; onPick: (lat: number, lon: number) => void
-}) {
-  const holder = useRef<HTMLDivElement>(null)
-  const map = useRef<maplibregl.Map | null>(null)
-  const marker = useRef<maplibregl.Marker | null>(null)
-  const cb = useRef(onPick)
-  cb.current = onPick
-
-  const style = useMemo<maplibregl.StyleSpecification>(() => ({
-    version: 8,
-    sources: {
-      osm: {
-        type: 'raster', tileSize: 256,
-        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-        attribution: '© OpenStreetMap',
-      },
-    },
-    layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-  }), [])
-
-  useEffect(() => {
-    if (!holder.current || map.current) return
-    const m = new maplibregl.Map({
-      container: holder.current, style, center: [lon, lat], zoom: 10.5,
-      attributionControl: false,
-    })
-    map.current = m
-    const el = document.createElement('div')
-    el.className = 'pin'
-    marker.current = new maplibregl.Marker({ element: el, draggable: true })
-      .setLngLat([lon, lat]).addTo(m)
-    marker.current.on('dragend', () => {
-      const p = marker.current!.getLngLat()
-      cb.current(Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6)))
-    })
-    m.on('click', (e) => {
-      marker.current?.setLngLat(e.lngLat)
-      cb.current(Number(e.lngLat.lat.toFixed(6)), Number(e.lngLat.lng.toFixed(6)))
-    })
-    // Контейнер появляется вместе с модальным окном: без явного resize
-    // карта остаётся в дефолтных 400×300.
-    const ro = new ResizeObserver(() => m.resize())
-    ro.observe(holder.current)
-    return () => { ro.disconnect(); m.remove(); map.current = null }
-  }, [])
-
-  return <div ref={holder} className="picker" />
 }

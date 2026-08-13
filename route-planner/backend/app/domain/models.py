@@ -227,6 +227,17 @@ class Dataset:
 SKILL_SPEEDUP = {0: 1.00, 1: 0.90, 2: 0.85, 3: 0.80}
 
 
+def nominal_duration(base_duration_min: int, complexity: int) -> int:
+    """Норматив визита по типу работ и категории сложности, кратно 5 минутам.
+
+    Та же формула, что в data/generate.py: генератор намеренно не зависит от
+    пакета `app`, поэтому копия там оставлена сознательно. Менять — в обоих
+    местах, иначе заведённая вручную заявка будет считаться иначе, чем
+    сгенерированная.
+    """
+    return int(round(base_duration_min * (0.85 + 0.15 * complexity) / 5.0)) * 5
+
+
 def service_minutes(job: Job, engineer: Engineer) -> int:
     """Сколько времени займёт визит именно у этого инженера."""
     surplus = max(0, engineer.level_in(job.specialization) - job.min_level)

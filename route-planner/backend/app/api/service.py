@@ -18,7 +18,8 @@ from pathlib import Path
 from ..baseline.greedy import Comparison, compare, greedy_plan
 from ..domain.loader import load_dataset, save_engineers
 from ..domain.models import (
-    Engineer, Job, TransportMode, hhmm_to_min, min_to_hhmm,
+    Engineer, Job, Priority, TransportMode, hhmm_to_min, min_to_hhmm,
+    nominal_duration,
 )
 from ..explain.why_not import WhyNot, why_not
 from ..explain.why_this import Explanation, why_this
@@ -160,6 +161,120 @@ class PlanningService:
             project(self.ds, self.plan,
                     state_at(self.ds.events, self.day_end + 60, self.completed))
 
+    # -- приём новой заявки ------------------------------------------------
+
+    def add_job(self, data: dict, time_limit_s: int = 3,
+                stability: int = 200) -> tuple[Job, PlanDiff | None]:
+        """Принять заявку в работающий день и сразу пересчитать остаток.
+
+        Пересчёт здесь не отдельная кнопка, а часть приёма: требование кейса —
+        «автоматически перепланирует день при поступлении новой заявки».
+
+        Заявка живёт в памяти до «Сброса» и на диск не пишется. Снимок — это
+        входной датасет дня, а не журнал операций: если складывать туда всё
+        созданное, «Сброс» перестанет возвращать день к утру, и повторить
+        демонстрацию с теми же цифрами станет невозможно.
+        """
+        with self._lock:
+            job = self._validate_job(data)
+            self.ds.jobs.append(job)
+            self._note("job", f"Новая заявка {job.priority.value}: {job.customer}",
+                       at=job.created_at_min)
+
+            if self.plan is None:
+                self.version += 1
+                return job, None
+
+            st = state_at(self.ds.events, self.now, self.completed)
+            self.plan, self.diff = replan(
+                self.ds, self.plan, st, weights=Weights(stability=stability),
+                provider=self.provider, time_limit_s=time_limit_s, pins=self.pins)
+            attach_geometry(self.plan, self.ds, self.provider)
+            self.version += 1
+            self._note("replan", self.diff.summary(), affected=self.diff.affected)
+            return job, self.diff
+
+    def _validate_job(self, data: dict) -> Job:
+        def fail(msg: str):
+            raise ValueError(msg)
+
+        wt_id = str(data.get("work_type_id", ""))
+        wt = self.ds.work_types.get(wt_id)
+        if wt is None:
+            fail("Выберите тип работ")
+
+        customer = str(data.get("customer", "")).strip()
+        if len(customer) < 2:
+            fail("Укажите заказчика")
+
+        try:
+            priority = Priority(str(data.get("priority", "P3")))
+        except ValueError:
+            fail(f"Неизвестный приоритет: {data.get('priority')}")
+
+        complexity = int(data.get("complexity", 3))
+        if not 1 <= complexity <= 5:
+            fail("Категория сложности — от 1 до 5")
+        duration = nominal_duration(wt.base_duration_min, complexity)
+
+        try:
+            tw_start = hhmm_to_min(str(data.get("tw_start", "")))
+            tw_end = hhmm_to_min(str(data.get("tw_end", "")))
+        except (ValueError, IndexError):
+            fail("Окно доступа указывается в формате ЧЧ:ММ")
+        if tw_end <= tw_start:
+            fail("Конец окна доступа раньше начала")
+        # Сначала про время, потом про размер: закрывшееся окно — более
+        # фундаментальная проблема, чем его ширина, и сообщение полезнее.
+        if tw_end <= self.now:
+            fail(f"Окно закрылось в {min_to_hhmm(tw_end)}, "
+                 f"сейчас {min_to_hhmm(self.now)} — заявку уже не выполнить")
+        # Окно обязано вмещать сами работы: иначе заявка невыполнима по
+        # построению, и солвер честно отложит её — но виноваты будут данные.
+        if tw_end - tw_start < duration:
+            fail(f"Окно короче норматива работ ({duration} мин) — "
+                 f"расширьте его или снизьте категорию сложности")
+
+        lat, lon = float(data.get("lat", 0)), float(data.get("lon", 0))
+        south, west, north, east = SERVICE_AREA
+        if not (south <= lat <= north and west <= lon <= east):
+            fail("Объект вне зоны обслуживания — укажите адрес в пределах города")
+
+        # SLA считается от момента поступления, как и в генераторе.
+        if priority is Priority.P1:
+            sla = min(self.now + 4 * 60, self.day_end)
+        elif priority is Priority.P2:
+            sla = min(self.now + 8 * 60, self.day_end)
+        else:
+            sla = tw_end
+
+        seq = len(self.ds.jobs) + 1
+        used = {j.id for j in self.ds.jobs}
+        while f"JOB-{seq:04d}" in used:
+            seq += 1
+
+        return Job(
+            id=f"JOB-{seq:04d}",
+            external_id=f"ЗН-{self.ds.date.replace('-', '')[2:]}-{seq:04d}",
+            customer=customer,
+            district=str(data.get("district", "")).strip() or "—",
+            address=str(data.get("address", "")).strip() or "адрес не указан",
+            lat=lat, lon=lon,
+            work_type_id=wt.id,
+            specialization=wt.specialization,
+            min_level=wt.min_level,
+            complexity=complexity,
+            duration_min=duration,
+            required_equipment=wt.equipment,
+            tw_start=tw_start, tw_end=tw_end,
+            tw_hard=bool(data.get("tw_hard", False)),
+            priority=priority,
+            sla_deadline=sla,
+            created_at_min=self.now,
+            known_at_day_start=False,
+            contact_phone=str(data.get("contact_phone", "")).strip(),
+        )
+
     # -- справочник инженеров ---------------------------------------------
 
     def upsert_engineer(self, data: dict, engineer_id: str | None = None) -> Engineer:
@@ -261,6 +376,9 @@ class PlanningService:
         break_min = int(data.get("break_min", 45))
         if break_min < 0 or break_min > 180:
             fail("Обед должен укладываться в 0–180 минут")
+        overtime = int(data.get("max_overtime_min", 60))
+        if overtime < 0 or overtime > 240:
+            fail("Допустимая переработка — от 0 до 240 минут")
         if break_min and not (shift_start <= break_from < break_to <= shift_end):
             fail("Окно обеда должно быть внутри смены")
         if break_min and break_to - break_from < break_min:
@@ -288,7 +406,7 @@ class PlanningService:
             vehicle_type=vehicle, home_lat=lat, home_lon=lon,
             home_address=str(data.get("home_address", "")).strip() or "адрес не указан",
             onboard_equipment=set(equipment),
-            max_overtime_min=int(data.get("max_overtime_min", 60)),
+            max_overtime_min=overtime,
         )
 
     # -- ручное вмешательство диспетчера ----------------------------------

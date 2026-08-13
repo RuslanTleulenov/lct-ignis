@@ -149,13 +149,13 @@ class EngineerIn(BaseModel):
     shift_end: str
     break_from: str = "12:00"
     break_to: str = "15:00"
-    break_min: int = Field(45, ge=0, le=180)
+    break_min: int = 45
     vehicle_type: str = "car"
     home_lat: float
     home_lon: float
     home_address: str = ""
     onboard_equipment: list[str] = Field(default_factory=list)
-    max_overtime_min: int = Field(60, ge=0, le=240)
+    max_overtime_min: int = 60
 
 
 @router.get("/engineers")
@@ -220,6 +220,50 @@ def jobs() -> list[dict]:
         item["engineer_id"] = assigned.get(job.id) or service.completed.get(job.id)
         out.append(item)
     return out
+
+
+class JobIn(BaseModel):
+    """Заявка, поступившая в течение дня."""
+
+    customer: str
+    work_type_id: str
+    address: str = ""
+    district: str = ""
+    lat: float
+    lon: float
+    # Диапазон проверяет сервис, а не схема: pydantic отдаёт наружу свой
+    # массив ошибок, а диспетчеру нужна фраза на русском.
+    complexity: int = 3
+    priority: str = "P3"
+    tw_start: str
+    tw_end: str
+    tw_hard: bool = False
+    contact_phone: str = ""
+    time_limit_s: int = Field(3, ge=1, le=30)
+    stability: int = Field(200, ge=0, le=5000)
+
+
+@router.post("/jobs", status_code=201)
+async def create_job(req: JobIn) -> dict:
+    """Принять заявку и сразу пересчитать остаток дня.
+
+    Пересчёт входит в приём, а не выносится отдельной кнопкой: кейс требует
+    «автоматически перепланирует день при поступлении новой заявки».
+    """
+    body = req.model_dump()
+    try:
+        job, diff = await run_in_threadpool(
+            service.add_job, body, req.time_limit_s, req.stability)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    payload = {
+        "job": job_out(service.ds, job, "planned" if diff else "new"),
+        "plan": _plan_payload(service.diff) if service.ready else None,
+    }
+    await hub.broadcast({"type": "plan", "reason": "job", "version": service.version,
+                         "plan": payload["plan"]})
+    return payload
 
 
 @router.get("/events")

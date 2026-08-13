@@ -152,6 +152,22 @@ export interface Engineer {
   max_overtime_min: number
 }
 
+/** Заявка, поступающая в течение дня. */
+export interface JobInput {
+  customer: string
+  work_type_id: string
+  address: string
+  district: string
+  lat: number
+  lon: number
+  complexity: number
+  priority: Priority
+  tw_start: string
+  tw_end: string
+  tw_hard: boolean
+  contact_phone: string
+}
+
 /** Карточка инженера в том виде, в каком её принимает сервис. */
 export interface EngineerInput {
   id?: string | null
@@ -303,6 +319,10 @@ export const api = {
   reset: () => post<{ ok: boolean; now: string }>('/plan/reset'),
   pin: (jobId: string, engineerId: string | null) =>
     post<Plan>('/plan/pin', { job_id: jobId, engineer_id: engineerId }),
+
+  /** Приём заявки: сервис сам пересчитывает остаток дня и возвращает план. */
+  createJob: (body: JobInput) =>
+    post<{ job: Job; plan: Plan | null }>('/jobs', body),
 
   createEngineer: (body: EngineerInput) => post<Engineer>('/engineers', body),
   updateEngineer: (id: string, body: EngineerInput) =>

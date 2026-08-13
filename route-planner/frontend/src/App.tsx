@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api, type Compare, type DayEvent, type Dataset, type Engineer,
-  type Explanation, type Job, type LogEntry, type Plan, type WhyNot,
+  type Explanation, type Job, type JobInput, type LogEntry, type Plan, type WhyNot,
 } from './api'
 import { dayLabel } from './format'
 import { go, useRoute } from './router'
@@ -44,12 +44,13 @@ export default function App() {
   const [playing, setPlaying] = useState(false)
   const [railOpen, setRailOpen] = useState(true)
 
-  // В макете шапка содержит только четыре кнопки: критерий оптимизации,
-  // лимит расчёта и вес стабильности в интерфейс не вынесены. Бэкенд их
-  // по-прежнему принимает, здесь закреплены значения по умолчанию.
-  const preset = 'default'
-  const timeLimit = 15
-  const stability = 200
+  // Кейс требует настраиваемых весов цели, но в макете шапка — это четыре
+  // кнопки. Компромисс: параметры спрятаны за отдельной кнопкой и не ломают
+  // ряд, а значения по умолчанию совпадают с прежними.
+  const [preset, setPreset] = useState('default')
+  const [timeLimit, setTimeLimit] = useState(15)
+  const [stability, setStability] = useState(200)
+  const [showParams, setShowParams] = useState(false)
 
   const busyRef = useRef(false)
 
@@ -141,6 +142,27 @@ export default function App() {
     })
   }, [run])
 
+  /** Приём заявки: сервис сам пересчитывает день и возвращает новый план. */
+  const addJob = useCallback(async (body: JobInput) => {
+    setError(null)
+    setBusy('Принимаю заявку и пересчитываю день…')
+    try {
+      const res = await api.createJob(body)
+      if (res.plan) setPlan(res.plan)
+      await refreshAux()
+      const moved = res.plan?.diff?.moved.length ?? 0
+      const affected = res.plan?.diff?.affected.length ?? 0
+      setToast({
+        head: `Заявка ${res.job.id} принята — ${res.job.customer}`,
+        body: res.plan
+          ? `День пересчитан: перенесено ${moved}, затронуто инженеров ${affected}`
+          : 'План не построен — заявка попадёт в него при расчёте',
+      })
+    } finally {
+      setBusy(null)
+    }
+  }, [refreshAux])
+
   const reset = useCallback(async () => {
     setPlaying(false)
     await api.reset()
@@ -220,6 +242,50 @@ export default function App() {
 
         <span className="spacer" />
 
+        <div className="params">
+          <button className={`ghost${showParams ? ' on' : ''}`}
+                  onClick={() => setShowParams((v) => !v)}
+                  title="Критерий оптимизации и лимиты расчёта">Параметры</button>
+          {showParams && (
+            <>
+              <div className="params-catch" onClick={() => setShowParams(false)} />
+              <div className="params-panel">
+                <label className="field">
+                  <span>Что важнее сегодня</span>
+                  <select value={preset} onChange={(e) => setPreset(e.target.value)}>
+                    <option value="default">сбалансированно</option>
+                    <option value="sla">уложиться в SLA</option>
+                    <option value="travel">экономить пробег</option>
+                    <option value="balance">ровная загрузка</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Секунд на расчёт плана</span>
+                  <select value={timeLimit}
+                          onChange={(e) => setTimeLimit(Number(e.target.value))}>
+                    <option value={5}>5 с — черновик</option>
+                    <option value={15}>15 с — обычный</option>
+                    <option value={30}>30 с — тщательный</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Стабильность при пересчёте</span>
+                  <select value={stability}
+                          onChange={(e) => setStability(Number(e.target.value))}>
+                    <option value={0}>не беречь план</option>
+                    <option value={80}>низкая — двигать свободно</option>
+                    <option value={200}>средняя</option>
+                    <option value={600}>высокая — трогать минимум</option>
+                  </select>
+                </label>
+                <div className="muted" style={{ fontSize: 11.5 }}>
+                  Применяются со следующего расчёта. Стабильность — во сколько
+                  минут пути обходится передача визита другому инженеру.
+                </div>
+              </div>
+            </>
+          )}
+        </div>
         <button className="primary" onClick={build} disabled={!!busy}>Построить план</button>
         <button onClick={step} disabled={!!busy || !plan || !hasEventsLeft}>
           Следующее событие ›
@@ -265,7 +331,10 @@ export default function App() {
                             jobs={jobs} dataset={dataset} selectedJob={selectedJob}
                             onSelectJob={(id) => { setSelectedJob(id); go(`/jobs/${id}`) }} />
           )}
-          {route.screen === 'jobs' && <JobsScreen jobs={jobs} plan={plan} />}
+          {route.screen === 'jobs' && (
+            <JobsScreen jobs={jobs} plan={plan} dataset={dataset}
+                        onJobAdded={addJob} />
+          )}
           {route.screen === 'job' && route.id && (
             <JobScreen id={route.id} jobs={jobs} plan={plan} explanation={explanation}
                        whyNot={whyNot} busy={!!busy} onPin={pin} />

@@ -49,6 +49,9 @@ export function MapView({
   const map = useRef<maplibregl.Map | null>(null)
   const ready = useRef(false)
   const fitted = useRef<string | boolean>(false)
+  //: Границы последнего показанного набора точек и признак ручного вмешательства.
+  const bounds = useRef<maplibregl.LngLatBounds | null>(null)
+  const touched = useRef(false)
   // Обработчики читают актуальные пропсы через ref: иначе на карте навсегда
   // останется замыкание с первого рендера и клики начнут выбирать не то.
   const handlers = useRef({ onSelectJob, onSelectEngineer })
@@ -65,13 +68,34 @@ export function MapView({
     })
     m.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
     map.current = m
+    // Отладочная ручка: без доступа к инстансу карту нельзя продиагностировать
+    // из внешнего браузера, а именно так был найден сбой со слоями.
+    ;(window as unknown as { __map?: unknown }).__map = m
 
     // MapLibre измеряет контейнер один раз при создании. Если в этот момент
     // раскладка ещё не устоялась (а в React со StrictMode так и бывает), карта
     // навсегда остаётся в дефолтных 400×300 внутри контейнера любого размера.
     // Наблюдаем за размером явно — заодно чинится и ресайз окна.
-    const ro = new ResizeObserver(() => m.resize())
+    // Подгонка масштаба считается от размеров холста. Первый apply случается,
+    // когда карта ещё в дефолтных 400×300, и посчитанный для них масштаб на
+    // реальных 1160×460 показывает пол-области вместо маршрутов. Поэтому
+    // после каждого изменения размера подгонку повторяем — пока пользователь
+    // сам не подвинул карту.
+    const ro = new ResizeObserver(() => {
+      m.resize()
+      if (bounds.current && !touched.current) {
+        m.fitBounds(bounds.current, { padding: 60, duration: 0 })
+      }
+    })
     ro.observe(holder.current)
+    for (const ev of ['dragstart', 'zoomstart', 'rotatestart'] as const) {
+      m.on(ev, (e) => { if ((e as { originalEvent?: unknown }).originalEvent) touched.current = true })
+    }
+
+    // Ошибка внутри обработчика load обрывает его молча: слои, добавленные
+    // после сбойного, просто не появляются. Выводим наружу, иначе такое
+    // расхождение видно только на скриншоте.
+    m.on('error', (e) => console.error('[map]', e.error?.message ?? e))
 
     m.on('load', () => {
       m.resize()
@@ -80,13 +104,24 @@ export function MapView({
       m.addSource('unassigned', { type: 'geojson', data: EMPTY })
       m.addSource('depots', { type: 'geojson', data: EMPTY })
 
+      // Тёмная подложка под цветной линией: на светлых тайлах OSM маршрут
+      // без неё сливается с дорогами, особенно на мелком масштабе.
+      m.addLayer({
+        id: 'routes-casing', type: 'line', source: 'routes',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#12151c',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 5, 14, 8],
+          'line-opacity': 0.55,
+        },
+      })
       m.addLayer({
         id: 'routes', type: 'line', source: 'routes',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': ['get', 'color'],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.6, 14, 3.4],
-          'line-opacity': 0.85,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 2.6, 14, 4.5],
+          'line-opacity': 0.95,
         },
       })
       m.addLayer({
@@ -110,9 +145,14 @@ export function MapView({
       m.addLayer({
         id: 'stops', type: 'circle', source: 'stops',
         paint: {
+          // `interpolate` по зуму обязан быть на верхнем уровне выражения:
+          // вложенный внутрь `case` он роняет addLayer, обработчик load
+          // обрывается, и карта остаётся вообще без данных. Поэтому условие
+          // уехало внутрь опорных значений интерполяции.
           'circle-radius': [
-            'case', ['boolean', ['get', 'changed'], false], 8,
-            ['interpolate', ['linear'], ['zoom'], 9, 4, 14, 7],
+            'interpolate', ['linear'], ['zoom'],
+            9, ['case', ['boolean', ['get', 'changed'], false], 6, 4],
+            14, ['case', ['boolean', ['get', 'changed'], false], 10, 7],
           ],
           'circle-color': ['get', 'color'],
           'circle-stroke-color': [
@@ -264,13 +304,16 @@ export function MapView({
       // прыгать после каждого пересчёта.
       const shouldFit = focusEngineer ? fitted.current !== focusEngineer
         : !fitted.current
-      if (shouldFit && stopFeatures.length) {
+      if (stopFeatures.length) {
         const b = new maplibregl.LngLatBounds()
         for (const f of stopFeatures) {
           b.extend((f.geometry as GeoJSON.Point).coordinates as [number, number])
         }
-        m.fitBounds(b, { padding: 60, duration: focusEngineer ? 400 : 0 })
-        fitted.current = focusEngineer || true
+        bounds.current = b
+        if (shouldFit) {
+          m.fitBounds(b, { padding: 60, duration: focusEngineer ? 400 : 0 })
+          fitted.current = focusEngineer || true
+        }
       }
     }
     if (ready.current) apply()

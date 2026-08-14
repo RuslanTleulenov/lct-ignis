@@ -1,5 +1,6 @@
-import type { DayEvent, Dataset, Engineer, LogEntry, Plan } from '../api'
-import { engineerColor } from '../colors'
+import { toMin, type DayEvent, type Dataset, type Engineer, type LogEntry,
+  type Plan, type Route } from '../api'
+import { engineerColor, VEHICLE_LABEL } from '../colors'
 import { dur, initials, num } from '../format'
 import { go } from '../router'
 import { MapView } from '../components/MapView'
@@ -13,6 +14,22 @@ interface Props {
   selectedJob: string | null
   changedJobs: Set<string>
   onSelectJob: (id: string) => void
+}
+
+/** Чем инженер занят в момент `now`: визит, переезд или смена не началась. */
+function currentActivity(route: Route, now: string | null):
+  { text: string; live: boolean } {
+  if (!now) return { text: 'смена не началась', live: false }
+  const t = toMin(now)
+  if (t < toMin(route.start)) return { text: 'смена не началась', live: false }
+  if (t > toMin(route.end)) return { text: 'день завершён', live: false }
+  for (const s of route.stops) {
+    if (s.kind !== 'job') continue
+    if (t >= toMin(s.service_start) && t <= toMin(s.service_end)) {
+      return { text: `визит · ${s.customer ?? ''}`, live: true }
+    }
+  }
+  return { text: 'в пути', live: true }
 }
 
 // Подписи событий заданы макетом.
@@ -43,6 +60,23 @@ export function OverviewScreen({ plan, dataset, engineers, events, log,
   const k = plan.kpi
   const busy = plan.routes.filter((r) => r.job_count).map((r) => r.work_min + r.travel_min)
   const spread = busy.length ? Math.max(...busy) / Math.max(1, Math.min(...busy)) : 0
+
+  // Строки таблицы «Все инженеры»: занятость, загрузка и чем человек занят
+  // прямо сейчас — по времени плана, а не по расписанию вообще.
+  const rows = plan.routes
+    .filter((r) => r.job_count)
+    .map((route) => {
+      const eng = engineers.find((e) => e.id === route.engineer_id)
+      const load = {
+        work: route.work_min, travel: route.travel_min,
+        lunch: route.lunch_min, idle: route.wait_min,
+        total: Math.max(1, route.work_min + route.travel_min
+          + route.lunch_min + route.wait_min),
+      }
+      return { route, eng, busy: load, now: currentActivity(route, plan.now) }
+    })
+    .sort((a, b) => b.route.job_count - a.route.job_count)
+  const maxBusy = Math.max(1, ...rows.map((r) => r.busy.total))
 
   // Подписи плиток заданы макетом — строчные, без заглавных.
   const tiles = [
@@ -123,24 +157,62 @@ export function OverviewScreen({ plan, dataset, engineers, events, log,
             кто чем занят сейчас и как загружен · клик по строке — карточка
           </span>
         </h2>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {plan.routes.filter((r) => r.job_count)
-            .sort((a, b) => b.job_count - a.job_count)
-            .map((r) => {
-              const eng = engineers.find((e) => e.id === r.engineer_id)
-              return (
-                <button key={r.engineer_id} className="ghost"
-                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px 6px 6px' }}
-                        onClick={() => go(`/engineers/${r.engineer_id}`)}>
-                  <span className="avatar sm" style={{ background: engineerColor(r.engineer_id) }}>
-                    {initials(r.engineer_name)}
-                  </span>
-                  {r.engineer_name}
-                  <span className="muted num">{r.job_count}</span>
-                  {eng && !eng.can_carry_bulky && <span className="muted">пешком</span>}
-                </button>
-              )
-            })}
+        <table className="grid">
+          <thead>
+            <tr>
+              <th>Инженер</th>
+              <th style={{ width: 130 }}>Транспорт</th>
+              <th style={{ width: 100 }}>Смена</th>
+              <th className="r" style={{ width: 70 }}>Заявок</th>
+              <th style={{ width: 200 }}>Сейчас</th>
+              <th style={{ width: 260 }}>Загрузка за день</th>
+              <th className="r" style={{ width: 100 }}>Занятость</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ route, eng, busy, now: activity }) => (
+              <tr key={route.engineer_id} className="click"
+                  onClick={() => go(`/engineers/${route.engineer_id}`)}>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span className="avatar sm"
+                          style={{ background: engineerColor(route.engineer_id) }}>
+                      {initials(route.engineer_name)}
+                    </span>
+                    <b>{route.engineer_name}</b>
+                  </div>
+                </td>
+                <td className="dim">{eng ? VEHICLE_LABEL[eng.vehicle_type] : '—'}</td>
+                <td className="dim num">{eng ? `${eng.shift[0]}–${eng.shift[1]}` : '—'}</td>
+                <td className="r num">{route.job_count}</td>
+                <td className="dim" style={{ whiteSpace: 'nowrap', overflow: 'hidden',
+                                             textOverflow: 'ellipsis' }}>
+                  <span className="dot" style={{
+                    background: activity.live ? 'var(--info)' : 'var(--ink-30)' }} />
+                  {' '}{activity.text}
+                </td>
+                <td>
+                  <div className="load" style={{ width: `${busy.total / maxBusy * 100}%` }}>
+                    <span className="work" style={{ width: `${busy.work / busy.total * 100}%` }} />
+                    <span className="travel" style={{ width: `${busy.travel / busy.total * 100}%` }} />
+                    <span className="lunch" style={{ width: `${busy.lunch / busy.total * 100}%` }} />
+                    <span className="idle" style={{ width: `${busy.idle / busy.total * 100}%` }} />
+                  </div>
+                </td>
+                <td className="r num" style={busy.work + busy.travel > 520
+                  ? { color: 'var(--danger)' } : undefined}>
+                  {dur(busy.work + busy.travel)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="legend" style={{ marginTop: 12 }}>
+          <span><i style={{ background: 'var(--accent)' }} />работа</span>
+          <span><i style={{ background: '#6b6b7a' }} />дорога</span>
+          <span><i style={{ background: '#3a3a44' }} />обед</span>
+          <span><i style={{ background: 'var(--danger-soft)' }} />простой</span>
         </div>
       </div>
     </div>

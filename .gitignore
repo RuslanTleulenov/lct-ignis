@@ -33,25 +33,25 @@ desktop.ini
 !.vscode/extensions.json
 
 # Claude Code
-.claude/settings.local.json
+.claude/
 
-# Сгенерированный датасет — воспроизводится командой `python data/generate.py`.
-# Снимаем игнор, если понадобится зафиксировать конкретный набор для демо.
-route-planner/data/seed/
+# Дорожный граф: исходную выгрузку OpenStreetMap держим в репозитории, чтобы
+# сервис поднимался без похода в Overpass. Свёрнутый граф — производный кеш:
+# он пересобирается сам при первом запуске и при подмене roads.json.
+route-planner/data/osm/graph.pkl
+route-planner/data/osm_moscow/
 
-# heat-network: выгрузка OSM и сгенерированные слои воспроизводятся
-# командами fetch_osm.py / generate.py (seed фиксирован).
-heat-network/data/cache/
+# Наборы данных, загруженные через интерфейс
+route-planner/data/uploads/
 
-# slide-designer: чужие шаблоны Office в репозиторий не кладём — набор
-# воспроизводится командой `python templates/fetch_local.py`.
-slide-designer/templates/deck/
-slide-designer/templates/theme/
-# Разбор шаблонов, рендеры и готовые презентации — производные артефакты.
-slide-designer/data/design/
-slide-designer/data/previews/
-slide-designer/data/out/
-slide-designer/.cache/
+# Папка, куда кладут присланные материалы: всё нужное уже извлечено
+# в route-planner/docs/tz и route-planner/data/beeline/raw
+route-planner/ресурсы/
 
-# �������� OSM � ��������� ���� � ��������������� data/fetch_osm.py
-route-planner/data/osm/
+# Соседние кейсы хакатона лежат в том же рабочем каталоге, но в этот
+# репозиторий не входят: здесь только сервис планирования маршрутов.
+/heat-network/
+/negotiation-sim/
+/slide-designer/
+/vsm-trainer/
+/_проверка/

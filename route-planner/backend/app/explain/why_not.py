@@ -22,7 +22,10 @@ from ..travel.provider import TravelTimeProvider
 # Формулировки причин заданы макетом: в сводке «Не назначено» они стоят
 # отдельными строками, и переписывать их без правки макета нельзя.
 REASON_SKILL = "Не хватает уровня квалификации"
-REASON_VEHICLE = "Нужен автомобиль (габарит)"
+#: Та же причина для наборов без уровней — формулировка из ТЗ, п. 2.2.
+REASON_NO_SKILL = "Отсутствует необходимый навык"
+SKILL_REASONS = {REASON_SKILL, REASON_NO_SKILL}
+REASON_VEHICLE = "Нет исполнителя с требуемым типом транспорта"
 REASON_EQUIPMENT = "Нет оборудования (дефицит приборов)"
 REASON_WINDOW = "Окно недостижимо по времени"
 REASON_FULL = "День инженера заполнен"
@@ -56,7 +59,7 @@ class WhyNot:
         службы другая специальность, и это не новость. Новость — что мешает
         оставшимся четверым.
         """
-        return [b for b in self.blockers if b.reason != REASON_SKILL]
+        return [b for b in self.blockers if b.reason not in SKILL_REASONS]
 
     def verdict(self) -> str:
         if self.feasible_with_shift:
@@ -206,7 +209,7 @@ def why_not(ds: Dataset, plan: Plan, job: Job,
     """Разобрать по каждому инженеру, что мешает взять заявку."""
     result = WhyNot(job_id=job.id)
     onboard = plan.onboard or {}
-    needs_car = ds.needs_vehicle(job)
+    transport = ds.required_transport(job)
 
     for route in plan.routes:
         eng = ds.engineer(route.engineer_id)
@@ -214,18 +217,26 @@ def why_not(ds: Dataset, plan: Plan, job: Job,
         level = eng.level_in(job.specialization)
         if level < job.min_level:
             spec = ds.specializations.get(job.specialization, job.specialization)
-            result.blockers.append(Blocker(
-                eng.id, eng.name, REASON_SKILL,
-                f"Уровень {level or 0} по «{spec}», "
-                f"заявке требуется минимум уровень {job.min_level}"))
+            if ds.uses_levels:
+                result.blockers.append(Blocker(
+                    eng.id, eng.name, REASON_SKILL,
+                    f"Уровень {level or 0} по «{spec}», "
+                    f"заявке требуется минимум уровень {job.min_level}"))
+            else:
+                result.blockers.append(Blocker(
+                    eng.id, eng.name, REASON_NO_SKILL,
+                    f"Навыка «{spec}» у инженера нет"))
             continue
 
-        if needs_car and not eng.vehicle_type.can_carry_bulky:
+        if transport is not None and eng.vehicle_type is not transport:
             bulky = [ds.equipment[q].name for q in job.required_equipment
                      if ds.equipment[q].bulky]
+            why = (f"нужно везти «{', '.join(bulky)}»" if bulky
+                   else "в заявке указан требуемый транспорт")
             result.blockers.append(Blocker(
                 eng.id, eng.name, REASON_VEHICLE,
-                f"Нужно везти «{', '.join(bulky)}», а инженер без автомобиля"))
+                f"Требуется «{transport.label}», у инженера — "
+                f"«{eng.vehicle_type.label}»: {why}"))
             continue
 
         missing = set(job.required_equipment) - set(onboard.get(eng.id, ()))
@@ -272,7 +283,7 @@ def why_not_report(ds: Dataset, plan: Plan,
         if wn.qualified:
             binding.update(b.reason for b in wn.qualified)
         else:
-            binding[REASON_SKILL] += 1
+            binding[REASON_NO_SKILL if not ds.uses_levels else REASON_SKILL] += 1
         by_spec[job.specialization] += 1
 
     lines.append("Что на самом деле упирается (по инженерам, прошедшим допуск):")

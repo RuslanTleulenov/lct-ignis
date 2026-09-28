@@ -1,14 +1,20 @@
-"""Baseline: как день планируется сейчас, вручную.
+"""Базовые варианты, с которыми сравнивается план.
 
-Нужен ради одной цифры — насколько лучше стало. Без неё жюри не с чем сравнить
+Нужны ради одной цифры — насколько лучше стало. Без неё жюри не с чем сравнить
 «назначено 98 %», и вся работа выглядит как красивая картинка.
 
-Baseline намеренно **не соломенное чучело**. Моделируем не бестолкового
-диспетчера, а грамотного: он разбирает заявки по срочности (сначала те, у кого
-окно закрывается раньше) и отдаёт каждую тому инженеру, который освободится
-раньше всех и окажется ближе. Это честный потолок ручного планирования.
+Два базовых варианта:
 
-Чего он не делает — и в этом вся разница:
+* **по ТЗ** (`tz_baseline`): заявки обрабатываются по порядку поступления и
+  назначаются первому по порядку во входных данных доступному инженеру,
+  который удовлетворяет обязательным ограничениям; порядок посещения — порядок
+  назначения. Так ТЗ задаёт единое сравнение для всех команд (п. 2.3);
+* **грамотный диспетчер** (`greedy_plan` по умолчанию): разбирает заявки по
+  срочности (сначала те, у кого окно закрывается раньше) и отдаёт каждую
+  ближайшему подходящему инженеру. Это честный потолок ручного планирования —
+  сравнение с ним показывает выигрыш не над соломенным чучелом.
+
+Чего ни один из них не делает — и в этом вся разница с оптимизатором:
 
 * не переставляет уже назначенные визиты, когда приходит следующая заявка;
 * не смотрит на день целиком, а решает по одной заявке;
@@ -22,7 +28,7 @@ Baseline намеренно **не соломенное чучело**. Моде
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..domain.models import Dataset, Engineer, Job, service_minutes
 from ..solver.engine import (
@@ -50,7 +56,8 @@ class _Sched:
 
 
 def _latest_start(job: Job, svc: int) -> int:
-    return job.tw_end - svc if job.tw_hard else job.tw_end
+    """Правило ТЗ: начало работ попадает в окно; окончание им не ограничено."""
+    return job.tw_end
 
 
 def greedy_plan(
@@ -68,6 +75,7 @@ def greedy_plan(
            "fifo" — строго в порядке поступления (как реально лежит список)
     pick:  "nearest" — из подходящих берём ближайшего (так и рассуждает человек)
            "soonest" — берём того, кто освободится раньше всех
+           "first"   — первого подходящего по порядку во входных данных (ТЗ)
 
     По умолчанию «ближайший»: диспетчер мыслит географией, а не расписанием.
     Вариант «кто раньше освободится» гоняет людей через весь город и делает
@@ -117,7 +125,8 @@ def greedy_plan(
 
     for job in queue:
         allowed = set(eligible_engineers(ds, job, onboard))
-        best: tuple[int, int, int] | None = None      # (старт, дорога, индекс)
+        best: tuple[int, int, int] | None = None      # ключ выбора
+        best_idx = -1
 
         for idx, s in enumerate(state):
             if idx not in allowed:
@@ -132,21 +141,25 @@ def greedy_plan(
             start = max(depart + travel, job.tw_start)
             if start > _latest_start(job, svc):
                 continue
-            back = provider.minutes(job.location, s.eng.home,
-                                    s.eng.vehicle_type, start + svc)
+            back = (provider.minutes(job.location, s.eng.home,
+                                     s.eng.vehicle_type, start + svc)
+                    if ds.return_to_start else 0)
             if start + svc + back > s.eng.shift_end + s.eng.max_overtime_min:
                 continue
-            key = ((travel, start, idx) if pick == "nearest"
-                   else (start, travel, idx))
+            if pick == "nearest":
+                key = (travel, start, idx)
+            elif pick == "first":
+                key = (idx, start, travel)
+            else:
+                key = (start, travel, idx)
             if best is None or key < best:
-                best = key
+                best, best_idx = key, idx
 
         if best is None:
             unassigned.append(job.id)
             continue
 
-        _, _, idx = best
-        s = state[idx]
+        s = state[best_idx]
         svc = service_minutes(job, s.eng)
         depart = s.free_at
         if not s.lunch_taken and depart >= s.eng.break_from:
@@ -177,23 +190,7 @@ def greedy_plan(
         s.pos = job.location
         s.free_at = start + svc
 
-    # возврат домой
-    routes: list[Route] = []
-    for s in state:
-        back = provider.minutes(s.pos, s.eng.home, s.eng.vehicle_type, s.free_at)
-        km = provider.distance_km(s.pos, s.eng.home)
-        end = s.free_at + back
-        s.route.travel_min += back
-        s.route.travel_km = round(s.route.travel_km + km, 2)
-        s.route.end_min = end
-        s.route.stops.append(Stop(
-            kind="end", job_id=None,
-            label=f"Возврат домой — {s.eng.home_address}",
-            lat=s.eng.home_lat, lon=s.eng.home_lon,
-            arrival=end, service_start=end, service_end=end,
-            wait_min=0, travel_min_from_prev=back, travel_km_from_prev=round(km, 2),
-        ))
-        routes.append(s.route)
+    routes: list[Route] = [_finish(ds, s, provider) for s in state]
 
     plan = Plan(
         date=ds.date, routes=routes, unassigned=unassigned, kpi={},
@@ -201,6 +198,51 @@ def greedy_plan(
         status="BASELINE", weights=Weights(), onboard=onboard, pickup=pickup,
     )
     plan.kpi = compute_kpi(plan, jobs)
+    return plan
+
+
+def _finish(ds: Dataset, s: _Sched, provider: TravelTimeProvider) -> Route:
+    """Закрыть маршрут: вернуться домой, если так устроен набор, либо
+    закончить на последней заявке. Инженер без заявок остаётся дома —
+    холостой рейс на склад ему не нужен (см. solver.engine)."""
+    e = s.eng
+    if not s.route.job_count:
+        home = Stop(kind="start", job_id=None, label=f"Смена не начата — {e.home_address}",
+                    lat=e.home_lat, lon=e.home_lon, arrival=e.shift_start,
+                    service_start=e.shift_start, service_end=e.shift_start,
+                    wait_min=0, travel_min_from_prev=0, travel_km_from_prev=0.0)
+        s.route.stops = [home, replace(home, kind="end")]
+        s.route.pickup_warehouse = None
+        s.route.travel_min = s.route.travel_km = 0
+        s.route.start_min = s.route.end_min = e.shift_start
+        return s.route
+    if ds.return_to_start:
+        back = provider.minutes(s.pos, e.home, e.vehicle_type, s.free_at)
+        km = provider.distance_km(s.pos, e.home)
+        end_point, label = e.home, f"Возврат домой — {e.home_address}"
+    else:
+        back, km = 0, 0.0
+        end_point, label = s.pos, "Конец маршрута"
+    end = s.free_at + back
+    s.route.travel_min += back
+    s.route.travel_km = round(s.route.travel_km + km, 2)
+    s.route.end_min = end
+    s.route.stops.append(Stop(
+        kind="end", job_id=None, label=label,
+        lat=end_point[0], lon=end_point[1],
+        arrival=end, service_start=end, service_end=end,
+        wait_min=0, travel_min_from_prev=back, travel_km_from_prev=round(km, 2),
+    ))
+    return s.route
+
+
+def tz_baseline(ds: Dataset, jobs: list[Job] | None = None,
+                provider: TravelTimeProvider | None = None,
+                onboard: dict[str, set[str]] | None = None,
+                pickup: dict[str, str | None] | None = None) -> Plan:
+    """Базовый вариант ровно по ТЗ, п. 2.3 — единый для всех команд."""
+    plan = greedy_plan(ds, jobs, provider, onboard, pickup, order="fifo", pick="first")
+    plan.status = "BASELINE_TZ"
     return plan
 
 

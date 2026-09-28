@@ -140,7 +140,8 @@ def project(ds: Dataset, prev: Plan, st: DayState) -> Projection:
 
         engineers.append(replace(
             eng,
-            vehicle_type=(TransportMode.WALK_TRANSIT if eng.id in st.lost_vehicle
+            # сломалась машина — дальше общественным транспортом
+            vehicle_type=(TransportMode.TRANSIT if eng.id in st.lost_vehicle
                           else eng.vehicle_type),
             current_lat=position[0],
             current_lon=position[1],
@@ -158,22 +159,50 @@ def project(ds: Dataset, prev: Plan, st: DayState) -> Projection:
 
 @dataclass(slots=True)
 class PlanDiff:
+    """Что изменилось между планами — ТЗ, п. 2.4.2: «какие назначения, порядок
+    заявок или маршруты изменились»."""
+
     moved: list[tuple[str, str, str]] = field(default_factory=list)   # заявка, откуда, куда
     added: list[tuple[str, str]] = field(default_factory=list)        # заявка, кому
     removed: list[str] = field(default_factory=list)                  # выпали из плана
+    #: тот же инженер, но другое место в маршруте: заявка, инженер, было, стало
+    reordered: list[tuple[str, str, int, int]] = field(default_factory=list)
+    #: тот же инженер и порядок, но время начала сдвинулось: заявка, инженер, было, стало
+    shifted: list[tuple[str, str, int, int]] = field(default_factory=list)
     kept: int = 0
     affected: list[str] = field(default_factory=list)
     untouched: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         total = len(self.affected) + len(self.untouched)
-        return (f"перенесено {len(self.moved)}, добавлено {len(self.added)}, "
-                f"снято {len(self.removed)}, без изменений {self.kept}; "
-                f"затронуто инженеров {len(self.affected)} из {total}")
+        parts = [f"перенесено {len(self.moved)}", f"добавлено {len(self.added)}",
+                 f"снято {len(self.removed)}"]
+        if self.reordered:
+            parts.append(f"переставлено {len(self.reordered)}")
+        if self.shifted:
+            parts.append(f"сдвинуто по времени {len(self.shifted)}")
+        parts.append(f"без изменений {self.kept}")
+        return (", ".join(parts)
+                + f"; затронуто инженеров {len(self.affected)} из {total}")
+
+
+#: Сдвиг начала визита меньше этого в diff не попадает: минуты набегают от
+#: округления матрицы, и без порога каждый пересчёт «сдвигал» полдня.
+SHIFT_NOTICE_MIN = 15
+
+
+def _sequences(plan: Plan) -> dict[str, list[tuple[str, int]]]:
+    """Инженер -> [(заявка, начало работ)] в порядке объезда."""
+    return {
+        r.engineer_id: [(s.job_id, s.service_start) for s in r.stops
+                        if s.kind == "job" and s.job_id]
+        for r in plan.routes
+    }
 
 
 def diff_plans(prev_assignment: dict[str, str], new_plan: Plan,
-               locked: dict[str, str], all_engineers: list[str]) -> PlanDiff:
+               locked: dict[str, str], all_engineers: list[str],
+               prev_plan: Plan | None = None) -> PlanDiff:
     d = PlanDiff()
     new_assignment = {
         s.job_id: r.engineer_id
@@ -199,6 +228,28 @@ def diff_plans(prev_assignment: dict[str, str], new_plan: Plan,
         if job_id not in new_assignment:
             d.removed.append(job_id)
             touched.add(eng_id)
+
+    # Порядок и время у тех, кто остался у своего инженера. Сравниваются
+    # последовательности только по общим заявкам: выпавший из середины визит
+    # сам по себе не «переставляет» соседей.
+    if prev_plan is not None:
+        before, after = _sequences(prev_plan), _sequences(new_plan)
+        for eng_id, new_seq in after.items():
+            old_seq = before.get(eng_id, [])
+            common = ({j for j, _ in old_seq} & {j for j, _ in new_seq}) - set(locked)
+            old_kept = [(j, t) for j, t in old_seq if j in common]
+            new_kept = [(j, t) for j, t in new_seq if j in common]
+            old_pos = {j: i for i, (j, _) in enumerate(old_kept)}
+            old_time = {j: t for j, t in old_kept}
+            for i, (job_id, start) in enumerate(new_kept):
+                if old_pos[job_id] != i:
+                    d.reordered.append((job_id, eng_id, old_pos[job_id] + 1, i + 1))
+                    d.kept -= 1
+                    touched.add(eng_id)
+                elif abs(start - old_time[job_id]) >= SHIFT_NOTICE_MIN:
+                    d.shifted.append((job_id, eng_id, old_time[job_id], start))
+                    d.kept -= 1
+                    touched.add(eng_id)
 
     d.affected = sorted(touched)
     d.untouched = sorted(set(all_engineers) - touched)
@@ -260,5 +311,5 @@ def replan(
     all_ids = [e.id for e in ds.engineers]
     d = diff_plans(
         {j: e for j, e in proj.previous.items() if j not in proj.locked},
-        plan, proj.locked, all_ids)
+        plan, proj.locked, all_ids, prev_plan=prev)
     return plan, d

@@ -58,16 +58,20 @@ def test_pickup_uses_single_warehouse(ds, plan):
             assert route.pickup_warehouse in ds.warehouses
 
 
-def test_hard_window_contains_whole_visit(ds, plan):
-    """Жёсткое окно — про завершение работы, а не только про её начало."""
+def test_hard_window_bounds_the_start(ds, plan):
+    """Правило ТЗ (п. 2.2): начало работы попадает во временное окно.
+
+    Окончание окном не ограничено — слот заказчика «18:00–20:00» означает,
+    что мастер приходит в этот интервал, а не что он обязан уйти к 20:00.
+    """
     for _, stop in visits(plan):
         job = ds.job(stop.job_id)
         if not job.tw_hard:
             continue
         assert stop.service_start >= job.tw_start, f"{job.id}: приехал до окна"
-        assert stop.service_end <= job.tw_end, (
+        assert stop.service_start <= job.tw_end, (
             f"{job.id}: окно закрылось в {job.tw_end}, "
-            f"а работа шла до {stop.service_end}")
+            f"а работа началась в {stop.service_start}")
 
 
 def test_soft_window_not_started_early(ds, plan):
@@ -145,6 +149,30 @@ def test_lunch_is_not_counted_as_idle(ds, plan):
         eng = ds.engineer(route.engineer_id)
         assert route.lunch_min == eng.break_min
         assert route.wait_min >= 0
+
+
+def test_engineer_without_jobs_stays_home(ds, plan):
+    """Без заявок инженер не выходит в смену — и на склад не едет.
+
+    Заезд на склад назначается утром, до расчёта. Если солвер потом не дал
+    инженеру ни одной заявки, в маршруте оставался холостой рейс «склад — дом»,
+    и служба записывала себе минуты пути, которых никто не проедет.
+    """
+    idle = [r for r in plan.routes if not r.job_count]
+    assert idle, "в плане нет незанятых инженеров — проверка бессмысленна"
+    for route in idle:
+        assert route.travel_min == 0 and route.travel_km == 0, (
+            f"{route.engineer_id} без заявок, а в пути {route.travel_min} мин")
+        assert route.pickup_warehouse is None, (
+            f"{route.engineer_id} без заявок отправлен на склад "
+            f"{route.pickup_warehouse}")
+        assert not any(s.kind == "job" for s in route.stops)
+
+
+def test_service_travel_is_only_from_working_routes(ds, plan):
+    """KPI службы складывается из маршрутов с заявками и ничего не добавляет."""
+    assert plan.kpi["travel_min"] == sum(r.travel_min for r in plan.routes
+                                         if r.job_count)
 
 
 def test_every_unassigned_job_has_an_explanation(ds, plan, provider):

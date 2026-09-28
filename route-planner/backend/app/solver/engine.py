@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -37,8 +38,11 @@ from ..domain.models import (
 from ..travel.provider import Point, TravelTimeProvider, default_provider
 
 HORIZON = 24 * 60          # верхняя граница времени, минуты от полуночи
-MAX_WAIT = 180             # сколько инженер готов ждать открытия окна, минут
+MAX_WAIT = 12 * 60         # ожидание открытия окна не ограничено жёстко: простой платный (см. idle)
 PICKUP_MIN = 15            # время получения инструмента на складе
+READ_BUDGET = 16           # сколько раз читать прошлое решение при починке тёплого старта
+REPAIR_SECONDS = 1.0       # и сколько времени на это отводится
+READ_TIMEOUT_MS = 400      # лимит одного чтения: дольше — значит, маршрут отдаём поиску
 
 #: Час, на который считается матрица времени в пути.
 #:
@@ -50,6 +54,27 @@ PICKUP_MIN = 15            # время получения инструмент�
 #: 1.15 — утреннее затишье, из-за которого весь день был занижен примерно на
 #: десятую часть, а вечерние перегоны — в полтора раза.
 MATRIX_REFERENCE_MIN = 15 * 60
+
+
+class _Timing:
+    """Замер фаз solve() — печатается при RP_TIMING=1. Оставлен намеренно:
+    именно так нашлось, что чтение тёплого старта стоит 176 мс, а
+    Python-колбэки съедали две трети лимита поиска."""
+
+    def __init__(self) -> None:
+        self.enabled = bool(os.environ.get("RP_TIMING"))
+        self.last = time.perf_counter()
+        self.parts: list[tuple[str, float]] = []
+
+    def mark(self, label: str) -> None:
+        now = time.perf_counter()
+        self.parts.append((label, now - self.last))
+        self.last = now
+
+    def report(self) -> None:
+        if self.enabled:
+            print("    [solve] " + ", ".join(f"{k} {v * 1000:.0f} мс" for k, v in self.parts))
+
 
 
 # --------------------------------------------------------------------------
@@ -67,13 +92,15 @@ class Weights:
     balance: int = 0       # выравнивание загрузки (SetGlobalSpanCostCoefficient)
     idle: int = 1          # штраф за длину рабочего дня: сжимает простои
     stability: int = 0     # штраф за перенос визита другому инженеру при перепланировании
+    staff: int = 60        # цена выхода инженера в поле, в минутах дороги (метрика ТЗ)
 
     @staticmethod
     def preset(name: str) -> "Weights":
         return {
             "sla":      Weights(travel=1, sla=3, drop=2, soft_window=30, balance=0),
             "travel":   Weights(travel=3, sla=1, drop=1, soft_window=10, balance=0),
-            "balance":  Weights(travel=1, sla=1, drop=1, soft_window=15, balance=8),
+            "balance":  Weights(travel=1, sla=1, drop=1, soft_window=15, balance=8, staff=0),
+            "staff":    Weights(travel=1, sla=1, drop=1, soft_window=15, balance=0, staff=300),
             "default":  Weights(),
         }[name]
 
@@ -252,12 +279,14 @@ def eligible_engineers(ds: Dataset, job: Job, onboard: dict[str, set[str]],
     которой построена модель, иначе заявка уедет не тому человеку.
     """
     engineers = engineers if engineers is not None else ds.engineers
-    needs_car = ds.needs_vehicle(job)
+    transport = ds.required_transport(job)
     out = []
     for v, e in enumerate(engineers):
         if e.level_in(job.specialization) < job.min_level:
             continue
-        if needs_car and not e.vehicle_type.can_carry_bulky:
+        # ТЗ: если в заявке указан тип транспорта, у инженера должен быть
+        # именно он. Габаритный инструмент требует автомобиля тем же путём.
+        if transport is not None and e.vehicle_type is not transport:
             continue
         if not set(job.required_equipment) <= onboard[e.id]:
             continue
@@ -309,6 +338,7 @@ def solve(
     if not jobs or not n_veh:
         return Plan(ds.date, [], [j.id for j in jobs], {}, 0, "EMPTY", weights)
 
+    timing = _Timing()
     if onboard is None:
         onboard, pickup = assign_equipment(ds, jobs, engineers)
     else:
@@ -329,14 +359,30 @@ def solve(
     starts = [n_jobs + v for v in range(n_veh)]
     ends = [n_jobs + n_veh + v for v in range(n_veh)]
 
+    timing.mark("подготовка")
     manager = pywrapcp.RoutingIndexManager(len(points), n_veh, starts, ends)
     routing = pywrapcp.RoutingModel(manager)
 
     # ---- матрицы времени: своя на каждый вид транспорта ----
     matrices = {
-        mode: provider.matrix(points, mode, MATRIX_REFERENCE_MIN)
+        mode: [row[:] for row in provider.matrix(points, mode, MATRIX_REFERENCE_MIN)]
         for mode in {e.vehicle_type for e in engineers}
     }
+    if not ds.return_to_start:
+        # Обязательный MVP по ТЗ: после последней заявки возвращаться в
+        # стартовую точку не требуется. Дорога до узла-финиша обнуляется, и
+        # маршрут заканчивается там, где закончилась работа. Иначе в пробег и
+        # в смену попадал бы обратный путь, которого у заказчика нет.
+        for m in matrices.values():
+            for row in m:
+                for end in ends:
+                    row[end] = 0
+
+    if weights.staff:
+        # Обязательная метрика ТЗ — «наименьшее количество персонала». Фиксированная
+        # плата за каждый непустой маршрут: лишнего инженера солвер выведет в
+        # поле, только если это сэкономит больше минут дороги, чем стоит выход.
+        routing.SetFixedCostOfAllVehicles(int(weights.staff))
 
     def service_at(node: int, v: int) -> int:
         if node < n_jobs:
@@ -345,19 +391,21 @@ def solve(
             return PICKUP_MIN            # получение инструмента на складе
         return 0
 
+    # Транзиты регистрируются готовыми матрицами, а не Python-функциями.
+    # Поиск дёргает транзит миллионы раз, и на колбэках уходило две трети
+    # лимита времени в интерпретатор — солвер перебирал втрое меньше решений,
+    # чем мог. Матрицы живут на стороне C++ и стоят ничего.
+    n_nodes = len(points)
     time_cb_indices, cost_cb_indices = [], []
     for v, e in enumerate(engineers):
         matrix = matrices[e.vehicle_type]
-
-        def travel_cb(i, j, m=matrix, w=weights.travel):
-            return w * m[manager.IndexToNode(i)][manager.IndexToNode(j)]
-
-        def time_cb(i, j, m=matrix, v=v):
-            a = manager.IndexToNode(i)
-            return m[a][manager.IndexToNode(j)] + service_at(a, v)
-
-        cost_cb_indices.append(routing.RegisterTransitCallback(travel_cb))
-        time_cb_indices.append(routing.RegisterTransitCallback(time_cb))
+        service = [service_at(a, v) for a in range(n_nodes)]
+        time_matrix = [[matrix[a][b] + service[a] for b in range(n_nodes)]
+                       for a in range(n_nodes)]
+        cost_matrix = [[weights.travel * matrix[a][b] for b in range(n_nodes)]
+                       for a in range(n_nodes)]
+        cost_cb_indices.append(routing.RegisterTransitMatrix(cost_matrix))
+        time_cb_indices.append(routing.RegisterTransitMatrix(time_matrix))
 
     # Стоимость дуги — только дорога, взвешенная. Если бы сюда входило время
     # работы, солверу было бы выгодно бросать длинные заявки ради «экономии».
@@ -385,15 +433,19 @@ def solve(
         eng_index = {e.id: v for v, e in enumerate(engineers)}
         churn_cbs = []
         for v in range(n_veh):
-            def churn_cb(i, j, v=v):
-                node = manager.IndexToNode(j)
-                if node >= n_jobs:
-                    return 0
-                prev = previous_assignment.get(jobs[node].id)
-                if prev is None:
-                    return 0            # новая заявка — переносить нечего
-                return 0 if eng_index.get(prev) == v else 1
-            churn_cbs.append(routing.RegisterTransitCallback(churn_cb))
+            # 1 за визит, который раньше был у другого инженера; новая
+            # заявка — 0, переносить нечего. Зависит только от узла назначения,
+            # но регистрируется матрицей, а не унарным вектором: унарный
+            # транзит OR-Tools относит к узлу отправления, и после выбытия
+            # инженера измерение с ним становилось противоречивым — тёплый
+            # старт отвергался даже для пустого решения.
+            churn = [0] * n_nodes
+            for node, job in enumerate(jobs):
+                prev = previous_assignment.get(job.id)
+                if prev is not None and eng_index.get(prev) != v:
+                    churn[node] = 1
+            churn_cbs.append(routing.RegisterTransitMatrix(
+                [churn[:] for _ in range(n_nodes)]))
         routing.AddDimensionWithVehicleTransits(
             churn_cbs, 0, n_jobs + 1, True, "Churn")
         routing.GetDimensionOrDie("Churn").SetSpanCostCoefficientForAllVehicles(
@@ -433,14 +485,11 @@ def solve(
         routing.AddDisjunction([index], weights.drop * job.priority.drop_penalty)
 
         if job.tw_hard:
-            # Жёсткое окно означает, что клиент доступен только в это время,
-            # поэтому визит должен не просто начаться, а ЗАКОНЧИТЬСЯ внутри окна.
-            # Считаем по самому медленному из допустимых исполнителей: граница
-            # тогда не нарушится, кого бы солвер ни выбрал.
-            slowest = max((service_minutes(job, engineers[v]) for v in allowed),
-                          default=job.duration_min)
-            latest_start = max(job.tw_start, job.tw_end - slowest)
-            time_dim.CumulVar(index).SetRange(job.tw_start, latest_start)
+            # Правило ТЗ (п. 2.2, «Время»): начало работы должно попадать во
+            # временное окно заявки. Окончание окном не ограничено — так
+            # устроены и слоты заказчика: «18:00–20:00» означает, что мастер
+            # приходит в этот интервал, а не что он обязан уйти к 20:00.
+            time_dim.CumulVar(index).SetRange(job.tw_start, job.tw_end)
             soft_at, soft_w = job.sla_deadline, weights.sla * job.priority.sla_penalty_per_min
         else:
             # раньше начала окна на объект не пускают, позже — можно со штрафом
@@ -458,11 +507,14 @@ def solve(
     if use_breaks:
         solver = routing.solver()
         for v, e in enumerate(engineers):
-            latest_break_start = e.break_to - e.break_min
-            # При перепланировании днём обед может быть уже позади. Требовать
-            # его задним числом — значит сделать задачу неразрешимой.
-            if not e.break_min or e.starts_at > latest_break_start:
+            # При перепланировании днём обед не пересматриваем: утренний план
+            # его уже поставил. Если требовать его заново, когда окно обеда
+            # открылось, а маршрут после проекции забит слотами, солвер ищет,
+            # куда втиснуть перерыв, и чтение тёплого старта упирается в лимит
+            # времени — 3 секунды на маршрут вместо миллисекунд.
+            if not e.break_min or e.starts_at > e.break_from:
                 continue
+            latest_break_start = e.break_to - e.break_min
             service_by_index = [0] * routing.Size()
             for node in range(n_jobs):
                 idx = manager.NodeToIndex(node)
@@ -481,6 +533,7 @@ def solve(
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
     params.time_limit.FromSeconds(time_limit_s)
 
+    timing.mark("модель")
     started = time.perf_counter()
     warm_started = False
     if initial_routes:
@@ -493,29 +546,39 @@ def solve(
         warm: list[list[int]] = []
         for v, route in enumerate(initial_routes):
             nodes = [node_of[jid] for jid in route if jid in node_of]
-            warm.append([n for n in nodes if v in allowed_by_node[n]])
-        routing.CloseModelWithParameters(params)
-        # Прошлое решение могло стать чуть недопустимым: время ушло вперёд,
-        # старт маршрута сдвинулся, и последний визит перестал влезать в смену.
-        # Отбрасываем хвостовые визиты, пока решение не примется — выброшенные
-        # заявки поиск вернёт сам, зато остальной день не пересобирается с нуля.
-        initial = None
-        for drop in range(4):
-            trial = [r[:len(r) - drop] if drop else r for r in warm]
-            initial = routing.ReadAssignmentFromRoutes(trial, True)
-            if initial:
-                warm_started = True
-                break
+            nodes = [n for n in nodes if v in allowed_by_node[n]]
+            kept = _prune_late_visits(nodes, v, engineers[v], jobs,
+                                      matrices[engineers[v].vehicle_type],
+                                      starts[v], service_at)
+            warm.append(kept)
+            if timing.enabled and len(kept) != len(nodes):
+                print(f"    [warm] {engineers[v].id}: из {len(nodes)} визитов "
+                      f"оставлено {len(kept)}")
+        # Модель закрывается с коротким лимитом: он действует на чтение
+        # прошлого решения, а не на поиск. Чтение с обедами иногда само
+        # превращается в поиск и иначе съедает полный лимит — по 3 с на
+        # маршрут. Что не читается за 0,4 с, отдаём поиску: он получит свои
+        # `params` со своим лимитом при вызове Solve…WithParameters.
+        read_params = pywrapcp.DefaultRoutingSearchParameters()
+        read_params.CopyFrom(params)
+        read_params.time_limit.FromMilliseconds(READ_TIMEOUT_MS)
+        routing.CloseModelWithParameters(read_params)
+        timing.mark("закрытие модели")
+        initial = _repair_warm_start(routing, warm, timing.enabled)
+        warm_started = initial is not None
+        timing.mark("тёплый старт")
         solution = (routing.SolveFromAssignmentWithParameters(initial, params)
                     if initial else routing.SolveWithParameters(params))
     else:
         solution = routing.SolveWithParameters(params)
     solve_ms = int((time.perf_counter() - started) * 1000)
+    timing.mark("поиск")
 
     if solution is None:
         return Plan(ds.date, [], [j.id for j in jobs], {}, solve_ms,
                     "NO_SOLUTION", weights, onboard, candidates)
 
+    timing.report()
     plan = _extract(ds, jobs, engineers, manager, routing, solution, time_dim,
                     matrices, points, pickup, provider, starts, ends)
     plan.solve_ms = solve_ms
@@ -528,6 +591,113 @@ def solve(
     plan.candidates = candidates
     plan.kpi = compute_kpi(plan, jobs)
     return plan
+
+
+def _prune_late_visits(route: list[int], v: int, e: Engineer, jobs: list[Job],
+                       matrix: list[list[int]], start_node: int,
+                       service_at) -> list[int]:
+    """Выбросить из прошлого маршрута визиты, которые больше не успеть.
+
+    Проверка та же, что у солвера, — дорога, окна, смена, — но в Python за
+    микросекунды, а не через `ReadAssignmentFromRoutes` по 176 мс на чтение.
+    Обед здесь не учитывается: если из-за него солвер маршрут всё же отвергнет,
+    доработает `_repair_warm_start`, но таких случаев остаются единицы.
+    """
+    kept: list[int] = []
+    prev, t = start_node, e.starts_at + service_at(start_node, v)
+    for node in route:
+        job = jobs[node]
+        arrival = t + matrix[prev][node]
+        start = max(arrival, job.tw_start)
+        if job.tw_hard and start > job.tw_end:
+            continue                        # окно уже не поймать — отдаём поиску
+        end = start + service_at(node, v)
+        if end > e.shift_end + e.max_overtime_min:
+            break                           # дальше только хуже: хвост долой
+        kept.append(node)
+        prev, t = node, end
+    return kept
+
+
+def _repair_warm_start(routing, warm: list[list[int]], verbose: bool = False):
+    """Принять прошлое решение, подрезав только те маршруты, что стали недопустимы.
+
+    Прошлое решение могло стать чуть недопустимым: время ушло вперёд, инженер
+    спроецирован на середину перегона, и дорога до следующего визита выросла
+    на пару минут — а окно закрывалось впритык. `ReadAssignmentFromRoutes`
+    бракует всё решение целиком, если недопустим хоть один маршрут, и раньше
+    мы подрезали хвосты у ВСЕХ маршрутов разом: три попытки — и холодный старт,
+    на слотах заказчика так шло три пересчёта из пяти.
+
+    Чтение решения на модели с обедами стоит десятки миллисекунд, поэтому
+    проб должно быть мало: одна на всё решение целиком; если не принято —
+    по одной на маршрут, чтобы найти виноватых; и только им — варианты с
+    отрезанным хвостом или головой. Выброшенные заявки поиск вернёт сам, зато
+    остальной день не пересобирается с нуля.
+    """
+    if not any(warm):
+        return None
+    t0 = time.perf_counter()
+    whole = routing.ReadAssignmentFromRoutes(warm, True)
+    if verbose:
+        print(f"    [warm] чтение целиком: {'принято' if whole else 'отвергнуто'}, "
+              f"{(time.perf_counter() - t0) * 1000:.0f} мс, "
+              f"визитов {sum(len(r) for r in warm)}")
+    if whole:
+        return whole
+
+    def alone(v: int, route: list[int]):
+        trial = [[] for _ in warm]
+        trial[v] = route
+        return routing.ReadAssignmentFromRoutes(trial, True)
+
+    def variants(route: list[int]):
+        if len(route) > 1:
+            yield route[:-1]
+            yield route[1:]
+        if len(route) > 2:
+            yield route[:-2]
+            yield route[1:-1]
+        yield []
+
+    # Чтение обычно стоит миллисекунды, но на модели с обедами может упереться
+    # в лимит времени поиска. Поэтому ремонт ограничен и числом проб, и
+    # стенными часами: что не успели проверить — отдаём поиску.
+    budget = READ_BUDGET
+    deadline = time.perf_counter() + REPAIR_SECONDS
+
+    def within() -> bool:
+        return budget > 0 and time.perf_counter() < deadline
+
+    repaired: list[list[int]] = []
+    for v, route in enumerate(warm):
+        if not route:
+            repaired.append(route)
+            continue
+        if not within():
+            repaired.append([])
+            continue
+        budget -= 1
+        t1 = time.perf_counter()
+        ok = alone(v, route)
+        if verbose:
+            print(f"    [warm] маршрут {v}: {len(route)} визитов, "
+                  f"{'ок' if ok else 'нарушает'}, {(time.perf_counter() - t1) * 1000:.0f} мс")
+        if ok:
+            repaired.append(route)
+            continue
+        chosen: list[int] = []
+        for attempt in variants(route):
+            if not attempt or not within():
+                break
+            budget -= 1
+            if alone(v, attempt):
+                chosen = attempt
+                break
+        repaired.append(chosen)
+    if not any(repaired):
+        return None
+    return routing.ReadAssignmentFromRoutes(repaired, True) or None
 
 
 # --------------------------------------------------------------------------
@@ -606,16 +776,23 @@ def _extract(ds, jobs, engineers, manager, routing, solution, time_dim,
             index = solution.Value(routing.NextVar(index))
 
         end_node = manager.IndexToNode(index)
-        travel = matrix[prev_node][end_node]
-        km = provider.distance_km(points[prev_node], points[end_node],
-                                  e.vehicle_type)
         end_time = solution.Min(time_dim.CumulVar(index))
+        if ds.return_to_start:
+            travel = matrix[prev_node][end_node]
+            km = provider.distance_km(points[prev_node], points[end_node],
+                                      e.vehicle_type)
+            end_point, end_label = points[end_node], f"Возврат домой — {e.home_address}"
+        else:
+            # Маршрут заканчивается на последней заявке (ТЗ, п. 2.4): обратный
+            # путь не планируется и в пробег не входит.
+            travel, km = 0, 0.0
+            end_point, end_label = points[prev_node], "Конец маршрута"
         route.travel_min += travel
         route.travel_km += km
         route.end_min = end_time
         route.stops.append(Stop(
-            kind="end", job_id=None, label=f"Возврат домой — {e.home_address}",
-            lat=points[end_node][0], lon=points[end_node][1],
+            kind="end", job_id=None, label=end_label,
+            lat=end_point[0], lon=end_point[1],
             arrival=end_time, service_start=end_time, service_end=end_time,
             wait_min=0, travel_min_from_prev=travel, travel_km_from_prev=round(km, 2),
         ))
@@ -640,6 +817,26 @@ def _extract(ds, jobs, engineers, manager, routing, solution, time_dim,
                     route.wait_min -= e.break_min
                     break
 
+        # Инженеру, которому не досталось ни одной заявки, склад не нужен: он
+        # просто не выходит в смену. Заезд назначается утром, до расчёта, и без
+        # этой проверки в плане остаётся холостой рейс «склад — дом» — четыре
+        # таких рейса добавляли к KPI службы 115 минут пути, которых в
+        # реальности никто не проедет. Остановки не убираем совсем: и
+        # перепланирование, и карта рассчитывают, что у маршрута есть начало.
+        if not route.job_count:
+            route.pickup_warehouse = None
+            route.travel_min = route.work_min = route.wait_min = 0
+            route.travel_km = 0.0
+            route.start_min = route.end_min = e.starts_at
+            route.stops = [
+                Stop(kind=kind, job_id=None,
+                     label=f"Смена не начата — {e.home_address}",
+                     lat=e.home_lat, lon=e.home_lon,
+                     arrival=e.starts_at, service_start=e.starts_at,
+                     service_end=e.starts_at, wait_min=0,
+                     travel_min_from_prev=0, travel_km_from_prev=0.0)
+                for kind in ("start", "end")
+            ]
         routes.append(route)
 
     unassigned = [j.id for j in jobs if j.id not in visited]
@@ -667,7 +864,7 @@ def attach_geometry(plan: Plan, ds: Dataset, provider: TravelTimeProvider) -> No
             try:
                 stop.geometry = provider.path((prev.lat, prev.lon),
                                               (stop.lat, stop.lon), mode)
-                if mode is TransportMode.WALK_TRANSIT and hasattr(provider, "uses_metro"):
+                if mode is TransportMode.TRANSIT and hasattr(provider, "uses_metro"):
                     stop.via_metro = provider.uses_metro((prev.lat, prev.lon),
                                                          (stop.lat, stop.lon))
             except Exception:
@@ -679,7 +876,11 @@ def compute_kpi(plan: Plan, jobs: list[Job]) -> dict:
     assigned = [s for r in plan.routes for s in r.stops if s.kind == "job"]
     late = [s for s in assigned if s.sla_late_min > 0]
 
-    busy = [r.busy_min for r in plan.routes]
+    # Загрузку считаем по тем, у кого есть работа. Незанятые инженеры дают нули,
+    # а нуль в этой статистике врёт: он превращает разброс в «от нуля до
+    # максимума» и занижает среднюю занятость службы, хотя сколько инженеров
+    # осталось без заявок, видно отдельной цифрой `engineers_used`.
+    busy = [r.busy_min for r in plan.routes if r.job_count]
     mean_busy = sum(busy) / len(busy) if busy else 0
     spread = (max(busy) - min(busy)) if busy else 0
     variance = (sum((b - mean_busy) ** 2 for b in busy) / len(busy)) if busy else 0

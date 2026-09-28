@@ -33,7 +33,7 @@ def osm_provider(graph):
 
 
 def test_all_profiles_present(graph):
-    assert set(graph.graphs) == {"car", "foot", "transit"}
+    assert set(graph.graphs) == {"car", "foot", "bike", "transit"}
     assert graph.n_road > 10_000
 
 
@@ -91,13 +91,44 @@ def test_geometry_follows_streets(osm_provider, ds):
     assert line[0] == [a.lon, a.lat] and line[-1] == [b.lon, b.lat]
 
 
-def test_van_is_slower_than_car(osm_provider, ds):
+def test_turn_graph_is_built_from_the_extract(graph):
+    """Без графа манёвров автомобиль молча поедет под «кирпич»."""
+    assert graph.turns is not None, "рёберный граф не собран"
+    stats = graph.turns.stats
+    assert stats["applied"] > 3000, (
+        f"применено всего {stats['applied']} запретов — "
+        f"похоже, отношения не сопоставились с дорогами")
+    assert stats["blocked_by_signs"] > 0 and stats["uturns_dropped"] > 0
+
+
+def test_turns_keep_every_job_reachable(graph, ds):
+    """Запреты не должны отрезать адрес: объезд обязан находиться."""
+    points = [(j.lat, j.lon) for j in ds.jobs]
+    nodes = graph.snap(points, "car")
+    matrix = graph.turns.matrix(nodes)
+    assert np.isfinite(matrix).all(), (
+        f"{int((~np.isfinite(matrix)).sum())} пар стали недостижимы "
+        f"из-за запретов поворота")
+
+
+def test_turns_never_make_the_route_faster(graph, ds):
+    """Манёвры и знаки только ограничивают — время не может упасть."""
+    points = [(j.lat, j.lon) for j in ds.jobs[:40]]
+    nodes = graph.snap(points, "car")
+    plain = np.atleast_2d(graph.times(nodes, "car"))[:, nodes]
+    turned = graph.turns.matrix(nodes)
+    assert (turned >= plain - 1e-6).all(), "маршрут с манёврами оказался короче"
+    assert np.median(turned - plain) > 0, "штрафы за поворот ни на что не влияют"
+
+
+def test_bike_between_foot_and_car(osm_provider, ds):
+    """Велосипед быстрее пешехода, но медленнее машины — на одной и той же паре."""
     a, b = ds.jobs[0], ds.jobs[9]
-    car = osm_provider.minutes((a.lat, a.lon), (b.lat, b.lon),
-                               TransportMode.CAR, 10 * 60)
-    van = osm_provider.minutes((a.lat, a.lon), (b.lat, b.lon),
-                               TransportMode.VAN, 10 * 60)
-    assert van >= car
+    times = {
+        mode: osm_provider.minutes((a.lat, a.lon), (b.lat, b.lon), mode, 10 * 60)
+        for mode in (TransportMode.CAR, TransportMode.BIKE, TransportMode.FOOT)
+    }
+    assert times[TransportMode.CAR] < times[TransportMode.BIKE] < times[TransportMode.FOOT], times
 
 
 def test_rush_hour_is_slower(osm_provider, ds):

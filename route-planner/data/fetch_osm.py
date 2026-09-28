@@ -4,8 +4,9 @@
 раз и кладётся в кеш: дальше сервис работает с диска и в сеть не ходит — на
 защите интернета может не быть.
 
-    py -3.11 data/fetch_osm.py            # выгрузить в data/osm/
-    py -3.11 data/fetch_osm.py --force    # перекачать, даже если кеш есть
+    py -3.11 data/fetch_osm.py                 # выгрузить в data/osm/ (Москва + юг области)
+    py -3.11 data/fetch_osm.py --bbox moscow   # только Москва: вдвое меньше и быстрее
+    py -3.11 data/fetch_osm.py --force         # перекачать, даже если кеш есть
 
 Что берём и почему не всё:
 
@@ -32,8 +33,15 @@ OVERPASS = [
     "https://overpass.kumi.systems/api/interpreter",
 ]
 
-#: Границы выгрузки — Москва с запасом вокруг области, где живут заявки.
-BBOX = (55.55, 37.30, 55.94, 37.88)
+#: Границы выгрузки. По умолчанию — Москва и юг области до Каширы: заявки
+#: заказчика на Юго-востоке уходят в Домодедово, Каширу и Ступино. Контур
+#: вчетверо больше московского по площади, но за МКАД артериальная сеть
+#: редкая: 66,8 тыс. линий против 43,1 тыс., граф собирается за 6 с вместо 3.
+BBOXES = {
+    "moscow": (55.55, 37.30, 55.94, 37.88),
+    "oblast": (54.75, 37.30, 55.94, 38.40),
+}
+BBOX = BBOXES["oblast"]
 
 #: Классы дорог для автомобильного графа. Жилые проезды и тротуары не берём
 #: сознательно, см. docstring модуля.
@@ -99,8 +107,15 @@ def fetch_roads() -> dict:
         elif el["type"] == "way":
             ways.append({"id": el["id"], "nodes": el["nodes"]})
 
-    # Теги нужны отдельно: out skel их не отдаёт, а без класса дороги и
-    # односторонности граф построить нельзя.
+    apply_tags(ways)
+
+    print(f"    {len(ways)} линий, {len(nodes)} узлов "
+          f"({time.time() - started:.0f} c)")
+    return {"nodes": {str(k): v for k, v in nodes.items()}, "ways": ways}
+
+
+def fetch_tags() -> dict:
+    """Теги дорог отдельным запросом: `out skel` их не отдаёт."""
     print("  теги дорог…")
     time.sleep(3)
     tagged = query(
@@ -108,16 +123,65 @@ def fetch_roads() -> dict:
         f'way({bbox_str()})["highway"~"^({CAR_CLASSES})$"];'
         f"out tags qt;"
     )
-    tags = {el["id"]: el.get("tags", {}) for el in tagged["elements"]}
+    return {el["id"]: el.get("tags", {}) for el in tagged["elements"]}
+
+
+def apply_tags(ways: list[dict], tags: dict | None = None) -> None:
+    """Разложить нужные теги по линиям. Что не взяли — то графу не видно."""
+    tags = tags if tags is not None else fetch_tags()
+    with_speed = 0
     for w in ways:
         t = tags.get(w["id"], {})
         w["highway"] = t.get("highway", "unclassified")
         w["oneway"] = t.get("oneway", "no")
         w["junction"] = t.get("junction", "")
+        # Разрешённая скорость есть примерно у двух третей линий. Там, где её
+        # нет, остаётся оценка по классу дороги.
+        w["maxspeed"] = t.get("maxspeed", "")
+        with_speed += bool(w["maxspeed"])
+    print(f"    разрешённая скорость указана у {with_speed} из {len(ways)} линий "
+          f"({with_speed / max(1, len(ways)) * 100:.0f} %)")
 
-    print(f"    {len(ways)} линий, {len(nodes)} узлов "
-          f"({time.time() - started:.0f} c)")
-    return {"nodes": {str(k): v for k, v in nodes.items()}, "ways": ways}
+
+def fetch_restrictions() -> dict:
+    """Запреты поворота: отношения type=restriction.
+
+    В нашей области их около 12 тысяч. Без них маршрут сворачивает там, где
+    поворот запрещён знаком или разметкой.
+
+    Берём только запреты «через узел»: `via` в виде цепочки путей встречается
+    на развязках и требует отдельной обработки, которой у нас нет — такие
+    отношения пропускаем и считаем в сводке, чтобы масштаб упрощения был виден.
+    """
+    print("  запреты поворота…")
+    time.sleep(3)
+    raw = query(
+        f"[out:json][timeout:600];"
+        f'relation({bbox_str()})["type"="restriction"];'
+        f"out body qt;"
+    )
+    items, via_way, incomplete = [], 0, 0
+    for el in raw["elements"]:
+        if el.get("type") != "relation":
+            continue
+        kind = el.get("tags", {}).get("restriction", "")
+        members = el.get("members", [])
+        frm = next((m["ref"] for m in members
+                    if m.get("role") == "from" and m["type"] == "way"), None)
+        to = next((m["ref"] for m in members
+                   if m.get("role") == "to" and m["type"] == "way"), None)
+        via = [m for m in members if m.get("role") == "via"]
+        if frm is None or to is None or not via:
+            incomplete += 1
+            continue
+        if via[0]["type"] != "node":
+            via_way += 1
+            continue
+        items.append({"kind": kind, "from": frm, "via": via[0]["ref"], "to": to})
+
+    print(f"    {len(items)} запретов через узел, "
+          f"{via_way} через путь (пропущены), {incomplete} неполных")
+    return {"restrictions": items, "skipped_via_way": via_way}
 
 
 def fetch_metro() -> dict:
@@ -184,8 +248,20 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--force", action="store_true", help="перекачать поверх кеша")
+    p.add_argument("--tags-only", action="store_true",
+                   help="обновить только теги дорог, не трогая геометрию")
     p.add_argument("--out", default=str(OUT_DIR))
+    p.add_argument("--bbox", default="oblast",
+                   help="moscow | oblast | 'юг,запад,север,восток' в градусах")
     args = p.parse_args()
+
+    global BBOX
+    if args.bbox in BBOXES:
+        BBOX = BBOXES[args.bbox]
+    else:
+        BBOX = tuple(float(x) for x in args.bbox.split(","))
+        if len(BBOX) != 4:
+            raise SystemExit("--bbox: четыре числа через запятую либо moscow/oblast")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -193,6 +269,17 @@ def main() -> None:
 
     print(f"Выгрузка OSM в {out}")
     print(f"  область: {bbox_str()}")
+
+    # Теги меняются чаще геометрии, а весит она в тридцать раз больше. Отдельный
+    # режим избавляет от перекачки 14 МБ узлов из-за одного нового тега.
+    if args.tags_only:
+        if not roads_path.exists():
+            raise SystemExit("сначала нужна полная выгрузка: без --tags-only")
+        roads = json.loads(roads_path.read_text(encoding="utf-8"))
+        apply_tags(roads["ways"])
+        roads_path.write_text(json.dumps(roads), encoding="utf-8")
+        print("Готово. Удалите data/osm/graph.pkl, чтобы граф пересобрался.")
+        return
 
     if roads_path.exists() and not args.force:
         print(f"  дороги уже выгружены ({roads_path.stat().st_size / 1e6:.0f} МБ), "
@@ -209,6 +296,14 @@ def main() -> None:
         metro_path.write_text(json.dumps(metro, ensure_ascii=False),
                               encoding="utf-8")
         print(f"    записано {metro_path.stat().st_size / 1e6:.1f} МБ")
+
+    turns_path = out / "restrictions.json"
+    if turns_path.exists() and not args.force:
+        print("  запреты поворота уже выгружены, пропускаю")
+    else:
+        turns = fetch_restrictions()
+        turns_path.write_text(json.dumps(turns), encoding="utf-8")
+        print(f"    записано {turns_path.stat().st_size / 1e6:.1f} МБ")
 
     print("Готово. Граф строится при первом запуске сервиса и кешируется.")
 

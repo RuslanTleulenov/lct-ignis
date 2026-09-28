@@ -26,17 +26,36 @@ Matrix = list[list[int]]
 
 EARTH_R_KM = 6371.0
 
-#: Средняя скорость по городу, км/ч. Для «пешком + общественный транспорт»
-#: это эффективная скорость двери-в-дверь с учётом ожидания и пересадок.
+#: Средняя скорость по городу, км/ч. Для общественного транспорта это
+#: эффективная скорость двери-в-дверь с учётом ожидания и пересадок.
 SPEED_KMH: dict[TransportMode, float] = {
     TransportMode.CAR: 27.0,
-    TransportMode.VAN: 23.0,
-    TransportMode.WALK_TRANSIT: 13.0,
+    TransportMode.FOOT: 4.8,
+    TransportMode.BIKE: 13.0,
+    TransportMode.TRANSIT: 13.0,
 }
 
 #: Коэффициент извилистости: реальный путь по улицам длиннее прямой линии.
 #: 1.35 — типичное значение для радиально-кольцевой сети Москвы.
 DETOUR_FACTOR = 1.35
+
+#: Скорость автомобиля на дальних перегонах. Городские 27 км/ч — это
+#: светофоры и дворы; дорога из Москвы в Каширу на сто километров идёт по
+#: трассе, и считать её по-городскому значит получить пять часов вместо
+#: полутора. Доля трассы растёт с дальностью: до HIGHWAY_FROM_KM её нет,
+#: после HIGHWAY_FULL_KM перегон почти целиком трассовый.
+HIGHWAY_SPEED_KMH = 65.0
+HIGHWAY_FROM_KM = 12.0
+HIGHWAY_FULL_KM = 45.0
+
+
+def straight_speed_kmh(mode: TransportMode, km: float) -> float:
+    """Эффективная скорость на перегоне длиной km по прямой (с извилистостью)."""
+    base = SPEED_KMH[mode]
+    if mode is not TransportMode.CAR or km <= HIGHWAY_FROM_KM:
+        return base
+    share = min(1.0, (km - HIGHWAY_FROM_KM) / (HIGHWAY_FULL_KM - HIGHWAY_FROM_KM))
+    return base + (HIGHWAY_SPEED_KMH - base) * share
 
 #: Профиль пробок по часам. Общественный транспорт от них почти не зависит —
 #: см. traffic_factor().
@@ -51,9 +70,11 @@ TRAFFIC_BY_HOUR: dict[int, float] = {
 def traffic_factor(mode: TransportMode, minute_of_day: int) -> float:
     hour = max(0, min(23, minute_of_day // 60))
     factor = TRAFFIC_BY_HOUR[hour]
-    if mode is TransportMode.WALK_TRANSIT:
+    if mode is TransportMode.TRANSIT:
         # метро в пробке не стоит: сглаживаем профиль до четверти эффекта
         return 1.0 + (factor - 1.0) * 0.25
+    if mode in (TransportMode.FOOT, TransportMode.BIKE):
+        return 1.0                      # пешеходу и велосипеду пробки безразличны
     return factor
 
 
@@ -98,24 +119,28 @@ class HaversineProvider:
                     mode: TransportMode = TransportMode.CAR) -> float:
         return haversine_km(a, b) * self.detour
 
+    def _speed(self, mode: TransportMode, km: float) -> float:
+        if mode is TransportMode.CAR:
+            return straight_speed_kmh(mode, km)
+        return self.speeds[mode]
+
     def minutes(self, a: Point, b: Point, mode: TransportMode,
                 departure_min: int) -> int:
         if a == b:
             return 0
         km = self.distance_km(a, b)
-        speed = self.speeds[mode] / traffic_factor(mode, departure_min)
+        speed = self._speed(mode, km) / traffic_factor(mode, departure_min)
         return max(1, round(km / speed * 60))
 
     def matrix(self, points: Sequence[Point], mode: TransportMode,
                departure_min: int) -> Matrix:
         n = len(points)
         factor = traffic_factor(mode, departure_min)
-        speed_kmh = self.speeds[mode] / factor
         out: Matrix = [[0] * n for _ in range(n)]
         for i in range(n):
             for j in range(i + 1, n):
                 km = haversine_km(points[i], points[j]) * self.detour
-                minutes = max(1, round(km / speed_kmh * 60))
+                minutes = max(1, round(km / (self._speed(mode, km) / factor) * 60))
                 out[i][j] = out[j][i] = minutes
         return out
 

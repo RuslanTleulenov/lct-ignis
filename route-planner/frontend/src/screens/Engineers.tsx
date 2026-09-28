@@ -153,14 +153,16 @@ export function EngineersScreen({ plan, engineers, dataset, onStaffChange }: Pro
                     <div style={{ minWidth: 0 }}>
                       <b>{eng.name}</b>
                       <div className="muted" style={{ fontSize: 11.5 }}>
-                        {eng.skills.map((s) => `${s.specialization_name} ур.${s.level}`).join(' · ')}
+                        {eng.skills.map((s) => dataset?.uses_levels
+                          ? `${s.specialization_name} ур.${s.level}`
+                          : s.specialization_name).join(' · ')}
                       </div>
                     </div>
                   </div>
                 </td>
                 <td className="dim">
                   {VEHICLE_LABEL[eng.vehicle_type]}
-                  {!eng.can_carry_bulky && (
+                  {dataset?.uses_equipment && !eng.can_carry_bulky && (
                     <div className="muted" style={{ fontSize: 11 }}>без габарита</div>
                   )}
                 </td>

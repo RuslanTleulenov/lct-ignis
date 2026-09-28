@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import type { Dataset, JobInput } from '../api'
-import { PRIORITY_COLOR, PRIORITY_LABEL } from '../colors'
+import type { Dataset, JobInput, Transport } from '../api'
+import { PRIORITY_COLOR, PRIORITY_LABEL, VEHICLE_LABEL } from '../colors'
 import { outsideArea, PointPicker } from './PointPicker'
 
 /**
@@ -14,7 +14,8 @@ import { outsideArea, PointPicker } from './PointPicker'
  * «автоматическое перепланирование при поступлении новой заявки».
  */
 
-const PRIORITIES: JobInput['priority'][] = ['P1', 'P2', 'P3', 'P4']
+// Справочник ТЗ: обычная либо срочная.
+const PRIORITIES: JobInput['priority'][] = ['urgent', 'normal']
 
 /** Норматив визита. Формула та же, что в сервисе и генераторе. */
 export function nominalDuration(base: number, complexity: number): number {
@@ -35,9 +36,9 @@ export function JobForm({ dataset, now, busy, error, onSubmit, onClose }: Props)
     customer: '', work_type_id: dataset.work_types[0]?.id ?? '',
     address: '', district: '',
     lat: 55.7558, lon: 37.6173,
-    complexity: 3, priority: 'P2',
+    complexity: 3, priority: 'urgent',
     tw_start: now, tw_end: addHours(now, 4), tw_hard: false,
-    contact_phone: '',
+    contact_phone: '', required_transport: null,
   }))
 
   const set = <K extends keyof JobInput>(k: K, v: JobInput[K]) =>
@@ -50,10 +51,9 @@ export function JobForm({ dataset, now, busy, error, onSubmit, onClose }: Props)
   const windowMin = toMin(form.tw_end) - toMin(form.tw_start)
 
   const outside = outsideArea(form.lat, form.lon)
-  const tooNarrow = windowMin < duration
   const closed = toMin(form.tw_end) <= toMin(now)
   const ready = form.customer.trim().length >= 2 && !!wt
-    && !outside && !tooNarrow && !closed && windowMin > 0
+    && !outside && !closed && windowMin > 0
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -94,14 +94,27 @@ export function JobForm({ dataset, now, busy, error, onSubmit, onClose }: Props)
                 {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n} из 5</option>)}
               </select>
             </label>
+            <label className="field" style={{ gridColumn: 'span 2' }}>
+              <span>Требуемый транспорт</span>
+              <select value={form.required_transport ?? ''}
+                      onChange={(e) => set('required_transport',
+                        (e.target.value || null) as Transport | null)}>
+                <option value="">не ограничен</option>
+                {Object.entries(VEHICLE_LABEL).map(([v, label]) => (
+                  <option key={v} value={v}>{label}</option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {wt && (
             <div className="derived">
-              <span>Специализация: <b>{dataset.specializations[wt.specialization]}</b>,
-                не ниже <b>{wt.min_level}</b> уровня</span>
+              <span>Навык: <b>{dataset.specializations[wt.specialization]}</b>
+                {dataset.uses_levels && <>, не ниже <b>{wt.min_level}</b> уровня</>}</span>
               <span>Норматив: <b className="num">{duration} мин</b></span>
-              <span>Оборудование: {wt.equipment.map((q) => q.name).join(', ') || '—'}</span>
+              {dataset.uses_equipment && (
+                <span>Оборудование: {wt.equipment.map((q) => q.name).join(', ') || '—'}</span>
+              )}
             </div>
           )}
 
@@ -113,7 +126,7 @@ export function JobForm({ dataset, now, busy, error, onSubmit, onClose }: Props)
                         ? { borderColor: PRIORITY_COLOR[p], color: PRIORITY_COLOR[p] }
                         : undefined}
                       onClick={() => set('priority', p)}>
-                {p} · {PRIORITY_LABEL[p]}
+                {PRIORITY_LABEL[p]}
               </button>
             ))}
           </div>
@@ -144,10 +157,10 @@ export function JobForm({ dataset, now, busy, error, onSubmit, onClose }: Props)
             </label>
           </div>
 
-          {tooNarrow && !closed && (
-            <div className="err" style={{ margin: '10px 0 0' }}>
-              Окно {windowMin} мин короче норматива работ {duration} мин —
-              расширьте его или снизьте категорию сложности.
+          {windowMin > 0 && windowMin < duration && !closed && (
+            <div className="muted" style={{ margin: '10px 0 0', fontSize: 12 }}>
+              Окно {windowMin} мин короче норматива {duration} мин: по правилу ТЗ
+              окно ограничивает начало работ, закончить можно и позже.
             </div>
           )}
           {closed && (

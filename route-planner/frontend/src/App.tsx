@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  api, type Compare, type DayEvent, type Dataset, type Engineer,
+  api, type Compare, type DayEvent, type Dataset, type DatasetInfo, type Engineer,
   type Explanation, type Job, type JobInput, type LogEntry, type Plan, type WhyNot,
 } from './api'
 import { dayLabel } from './format'
@@ -32,6 +32,8 @@ export default function App() {
   const [log, setLog] = useState<LogEntry[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
   const [compare, setCompare] = useState<Compare | null>(null)
+  const [baseline, setBaseline] = useState<'tz' | 'smart'>('tz')
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([])
   const [whyNotAll, setWhyNotAll] = useState<WhyNot[]>([])
 
   const [selectedJob, setSelectedJob] = useState<string | null>(null)
@@ -54,12 +56,34 @@ export default function App() {
 
   const busyRef = useRef(false)
 
-  useEffect(() => {
-    Promise.all([api.dataset(), api.engineers(), api.events()])
-      .then(([d, e, ev]) => { setDataset(d); setEngineers(e); setEvents(ev) })
-      .catch((err) => setError(String(err.message ?? err)))
-    api.plan().then((p) => { setPlan(p); void refreshAux() }).catch(() => {})
+  /** Перечитать всё, что зависит от набора данных. */
+  const loadDataset = useCallback(async () => {
+    const [d, e, ev, list] = await Promise.all([
+      api.dataset(), api.engineers(), api.events(), api.datasets(),
+    ])
+    setDataset(d); setEngineers(e); setEvents(ev); setDatasets(list.items)
   }, [])
+
+  useEffect(() => {
+    loadDataset().catch((err) => setError(String(err.message ?? err)))
+    api.plan().then((p) => { setPlan(p); void refreshAux() }).catch(() => {})
+  }, [loadDataset])
+
+  /** Смена набора: встроенный либо загруженный файлами. День начинается заново. */
+  const changeDataset = useCallback(async (
+    action: { activate: string } | { upload: File[]; name: string },
+  ) => {
+    setPlaying(false)
+    const res = 'activate' in action
+      ? await api.activateDataset(action.activate)
+      : await api.uploadDataset(action.upload, action.name)
+    await loadDataset()
+    setPlan(null); setCompare(null); setSelectedJob(null)
+    setExplanation(null); setWhyNotAll([])
+    await refreshAux()
+    setToast({ head: `Открыт набор: ${res.title}`,
+               body: 'Постройте план — прежний сброшен вместе с прожитым днём' })
+  }, [loadDataset])
 
   /** Состав службы изменился: перечитываем справочник и признак устаревания. */
   const reloadStaff = useCallback(async () => {
@@ -111,9 +135,9 @@ export default function App() {
         body: `Назначено ${p.kpi.jobs_assigned} из ${p.kpi.jobs_total}, `
           + `в пути ${p.kpi.travel_min} мин, нарушений SLA ${p.kpi.sla_violations}`,
       })
-      api.compare().then(setCompare).catch(() => {})
+      api.compare(baseline).then(setCompare).catch(() => {})
     }
-  }, [run, preset, timeLimit])
+  }, [run, preset, timeLimit, baseline])
 
   const step = useCallback(async () => {
     const p = await run('Перепланирую…', () => api.step(3, stability))
@@ -163,6 +187,33 @@ export default function App() {
     }
   }, [refreshAux])
 
+  /** Отмена заявки или недоступность инженера — с этого момента, с пересчётом. */
+  const fireEvent = useCallback(async (
+    type: 'job_cancelled' | 'engineer_unavailable', id: string,
+  ) => {
+    setError(null)
+    setBusy(type === 'job_cancelled' ? 'Отменяю и пересчитываю…' : 'Вывожу из смены и пересчитываю…')
+    try {
+      const res = await api.addEvent(type, id)
+      if (res.plan) setPlan(res.plan)
+      setEvents(await api.events())
+      await refreshAux()
+      const moved = res.plan?.diff?.moved.length ?? 0
+      const affected = res.plan?.diff?.affected.length ?? 0
+      setToast({
+        head: res.event.comment,
+        body: res.plan
+          ? `День пересчитан: перенесено ${moved}, затронуто инженеров ${affected}`
+          : 'План не построен — событие учтётся при расчёте',
+      })
+      if (type === 'engineer_unavailable') go('/engineers')
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }, [refreshAux])
+
   const reset = useCallback(async () => {
     setPlaying(false)
     await api.reset()
@@ -199,13 +250,21 @@ export default function App() {
   // при заходе на уже построенный план.
   useEffect(() => {
     if (route.screen !== 'effect' || compare || !plan || busy) return
-    api.compare().then(setCompare).catch(() => {})
-  }, [route.screen, compare, plan, busy])
+    api.compare(baseline).then(setCompare).catch(() => {})
+  }, [route.screen, compare, plan, busy, baseline])
+
+  /** Переключение базового варианта на экране «Эффект». */
+  const switchBaseline = useCallback((b: 'tz' | 'smart') => {
+    setBaseline(b)
+    setCompare(null)
+  }, [])
 
   const changedJobs = useMemo(() => {
     const s = new Set<string>()
     for (const m of plan?.diff?.moved ?? []) s.add(m.job_id)
     for (const a of plan?.diff?.added ?? []) s.add(a.job_id)
+    for (const r of plan?.diff?.reordered ?? []) s.add(r.job_id)
+    for (const t of plan?.diff?.shifted ?? []) s.add(t.job_id)
     return s
   }, [plan])
 
@@ -226,8 +285,8 @@ export default function App() {
           <span className="mark">ВС</span>
           <span>
             <span className="name">Выездная служба</span>
-            <span className="sub">{dataset
-              ? `диспетчерская · Москва · ${dayLabel(dataset.date)}`
+            <span className="sub" title={dataset?.title}>{dataset
+              ? `${dataset.title || 'диспетчерская · Москва'} · ${dayLabel(dataset.date)}`
               : 'загрузка…'}</span>
           </span>
         </a>
@@ -254,6 +313,7 @@ export default function App() {
                   <span>Что важнее сегодня</span>
                   <select value={preset} onChange={(e) => setPreset(e.target.value)}>
                     <option value="default">сбалансированно</option>
+                    <option value="staff">меньше персонала (метрика ТЗ)</option>
                     <option value="sla">уложиться в SLA</option>
                     <option value="travel">экономить пробег</option>
                     <option value="balance">ровная загрузка</option>
@@ -329,7 +389,9 @@ export default function App() {
           {route.screen === 'engineer' && route.id && (
             <EngineerScreen id={route.id} plan={plan} engineers={engineers}
                             jobs={jobs} dataset={dataset} selectedJob={selectedJob}
-                            onSelectJob={(id) => { setSelectedJob(id); go(`/jobs/${id}`) }} />
+                            onSelectJob={(id) => { setSelectedJob(id); go(`/jobs/${id}`) }}
+                            onUnavailable={(eid) => fireEvent('engineer_unavailable', eid)}
+                            busy={!!busy} />
           )}
           {route.screen === 'jobs' && (
             <JobsScreen jobs={jobs} plan={plan} dataset={dataset}
@@ -337,14 +399,18 @@ export default function App() {
           )}
           {route.screen === 'job' && route.id && (
             <JobScreen id={route.id} jobs={jobs} plan={plan} explanation={explanation}
-                       whyNot={whyNot} busy={!!busy} onPin={pin} />
+                       whyNot={whyNot} busy={!!busy} onPin={pin}
+                       onCancel={(jid) => fireEvent('job_cancelled', jid)} />
           )}
           {route.screen === 'backlog' && (
             <BacklogScreen plan={plan} whyNotAll={whyNotAll} />
           )}
-          {route.screen === 'effect' && <EffectScreen compare={compare} />}
+          {route.screen === 'effect' && (
+            <EffectScreen compare={compare} onBaseline={switchBaseline} />
+          )}
           {route.screen === 'reference' && (
-            <ReferenceScreen dataset={dataset} engineers={engineers} plan={plan} />
+            <ReferenceScreen dataset={dataset} engineers={engineers} plan={plan}
+                             datasets={datasets} onDataset={changeDataset} />
           )}
         </main>
       </div>

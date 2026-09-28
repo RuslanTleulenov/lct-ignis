@@ -155,11 +155,20 @@ export function MapView({
             14, ['case', ['boolean', ['get', 'changed'], false], 10, 7],
           ],
           'circle-color': ['get', 'color'],
+          // Приблизительный адрес (геокодер нашёл улицу, а не дом) — точка
+          // полупрозрачная с оранжевой обводкой: диспетчер видит, где мы гадаем.
+          'circle-opacity': ['case', ['boolean', ['get', 'approx'], false], 0.55, 1],
           'circle-stroke-color': [
-            'case', ['boolean', ['get', 'changed'], false], '#ffffff', '#0e1117',
+            'case',
+            ['boolean', ['get', 'changed'], false], '#ffffff',
+            ['boolean', ['get', 'approx'], false], '#f59f00',
+            '#0e1117',
           ],
           'circle-stroke-width': [
-            'case', ['boolean', ['get', 'changed'], false], 2.5, 1.2,
+            'case',
+            ['boolean', ['get', 'changed'], false], 2.5,
+            ['boolean', ['get', 'approx'], false], 2,
+            1.2,
           ],
         },
       })
@@ -185,7 +194,9 @@ export function MapView({
             .setLngLat((e.features![0].geometry as GeoJSON.Point).coordinates as [number, number])
             .setHTML(
               `<b>${p.customer ?? p.job_id}</b><br/>${p.work_type ?? ''}<br/>` +
-              `<span style="color:#93a0b5">${p.time ?? 'не назначена'}</span>`,
+              `<span style="color:#93a0b5">${p.time ?? 'не назначена'}</span>` +
+              (p.approx === 'true' || p.approx === true as unknown as string
+                ? '<br/><span style="color:#f59f00">адрес найден приблизительно</span>' : ''),
             )
             .addTo(m)
         })
@@ -264,6 +275,7 @@ export function MapView({
               color,
               seq: String(seq),
               changed: changedJobs.has(s.job_id),
+              approx: Boolean(s.approx),
               customer: s.customer ?? '',
               work_type: s.work_type ?? '',
               time: `${s.service_start}–${s.service_end} · ${route.engineer_name}`,

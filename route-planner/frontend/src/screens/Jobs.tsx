@@ -6,9 +6,17 @@ import { initials, num } from '../format'
 import { go } from '../router'
 
 // Формулировки статусов заданы макетом.
+/** Как геокодер нашёл адрес: всё, кроме точного дома, показываем явно. */
+const GEO_NOTE: Record<string, string> = {
+  'house~': 'дом без корпуса',
+  street: 'только улица',
+  district: 'центр района',
+  none: 'не найден',
+}
+
 const STATUS_LABEL: Record<string, string> = {
   planned: 'в плане', done: 'выполнена',
-  unassigned: 'не назначена', new: 'новая',
+  unassigned: 'не назначена', new: 'новая', cancelled: 'отменена',
 }
 
 export function JobsScreen({ jobs, plan, dataset, onJobAdded }: {
@@ -73,8 +81,8 @@ export function JobsScreen({ jobs, plan, dataset, onJobAdded }: {
           </select>
           <select value={prio} onChange={(e) => setPrio(e.target.value)}>
             <option value="all">все приоритеты</option>
-            {['P1', 'P2', 'P3', 'P4'].map((p) => (
-              <option key={p} value={p}>{p} — {PRIORITY_LABEL[p]}</option>
+            {['urgent', 'normal'].map((p) => (
+              <option key={p} value={p}>{PRIORITY_LABEL[p]}</option>
             ))}
           </select>
         </div>
@@ -101,7 +109,7 @@ export function JobsScreen({ jobs, plan, dataset, onJobAdded }: {
                       background: PRIORITY_COLOR[j.priority] + '22',
                       color: PRIORITY_COLOR[j.priority], borderColor: 'transparent',
                       fontWeight: 700, padding: '3px 9px',
-                    }}>{j.priority}</span>
+                    }}>{PRIORITY_LABEL[j.priority]}</span>
                   </td>
                   <td>
                     <b>{j.customer}</b>
@@ -160,15 +168,17 @@ interface JobProps {
   whyNot: WhyNot | null
   busy: boolean
   onPin: (jobId: string, engineerId: string | null) => void
+  onCancel: (jobId: string) => void
 }
 
-export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: JobProps) {
+export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin, onCancel }: JobProps) {
   const job = jobs.find((j) => j.id === id)
   if (!job) return <div className="empty">Заявка не найдена</div>
 
   const route = plan?.routes.find((r) => r.stops.some((s) => s.job_id === id))
   const stop = route?.stops.find((s) => s.job_id === id)
   const pinnedTo = plan?.pins[id]
+  const cancellable = !!plan && job.status !== 'done' && job.status !== 'cancelled'
 
   return (
     <div className="stack">
@@ -182,22 +192,32 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
             background: PRIORITY_COLOR[job.priority] + '22',
             color: PRIORITY_COLOR[job.priority], borderColor: 'transparent',
             fontWeight: 700, fontSize: 13,
-          }}>{job.priority} · {PRIORITY_LABEL[job.priority]}</span>
+          }}>{PRIORITY_LABEL[job.priority]}</span>
           <div style={{ minWidth: 0, flex: 1 }}>
             <h1 style={{ fontSize: 20, fontWeight: 800 }}>{job.customer}</h1>
             <div className="dim">{job.work_type}</div>
           </div>
           {pinnedTo && <span className="pill accent">закреплена</span>}
+          {cancellable && (
+            <button className="ghost" disabled={busy} title="Клиент отменил визит — пересчитать день"
+                    onClick={() => onCancel(id)}>Отменить заявку</button>
+          )}
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 16 }}>
-          <Field k="Адрес" v={job.address} />
+          <Field k="Адрес" v={job.geo_precision === 'house'
+            ? job.address
+            : `${job.address} · координаты приблизительные (${GEO_NOTE[job.geo_precision] ?? job.geo_precision})`} />
           <Field k="Окно клиента" v={`${job.window[0]}–${job.window[1]}${job.window_hard ? ' (жёсткое)' : ''}`} />
           <Field k="SLA до" v={job.sla_deadline} />
-          <Field k="Требуется" v={`${job.specialization_name}, ур. ${job.min_level}`} />
-          <Field k="Сложность" v={`${job.complexity} из 5 · ${job.duration_min} мин`} />
-          <Field k="Оборудование" v={job.required_equipment
-            .map((q) => q.bulky ? `${q.name} (габарит)` : q.name).join(', ') || '—'} />
+          <Field k="Навык" v={job.min_level > 1
+            ? `${job.specialization_name}, ур. ${job.min_level}` : job.specialization_name} />
+          <Field k="Длительность" v={`${job.duration_min} мин`} />
+          <Field k="Транспорт" v={job.required_transport_label ?? 'не ограничен'} />
+          {job.required_equipment.length > 0 && (
+            <Field k="Оборудование" v={job.required_equipment
+              .map((q) => q.bulky ? `${q.name} (габарит)` : q.name).join(', ')} />
+          )}
         </div>
       </div>
 
@@ -269,7 +289,15 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
         </div>
       )}
 
-      {whyNot && (
+      {job.status === 'cancelled' && (
+        <div className="card">
+          <h2>Отменена</h2>
+          <p className="dim">Клиент отменил визит — заявка снята с плана, остаток дня
+            пересчитан без неё.</p>
+        </div>
+      )}
+
+      {whyNot && job.status !== 'cancelled' && (
         <div className="card">
           <h2>Не назначена — вердикт</h2>
           <p style={{ color: 'var(--ink)' }}>{whyNot.verdict}</p>
@@ -280,8 +308,8 @@ export function JobScreen({ id, jobs, plan, explanation, whyNot, busy, onPin }: 
             </div>
           ))}
           <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-            Из {whyNot.blocked_total} инженеров службы требуемую квалификацию
-            имеют {whyNot.qualified.length}. Остальные — другой специальности.
+            Из {whyNot.engineers_total} инженеров службы требуемый навык есть
+            у {whyNot.skill_ok}; остальным мешают обязательные ограничения выше.
           </div>
         </div>
       )}

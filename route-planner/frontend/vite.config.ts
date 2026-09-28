@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // 5173 занят фронтендом соседнего проекта в этом же репозитории
+    // Порт фиксирован: README и сценарий показа ссылаются именно на него
     port: 5174,
     strictPort: true,
     proxy: {

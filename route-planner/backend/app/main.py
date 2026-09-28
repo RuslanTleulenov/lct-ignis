@@ -18,8 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import routes
 from .api.service import PlanningService
 
-DEFAULT_SNAPSHOT = (Path(__file__).resolve().parents[2]
-                    / "data" / "seed" / "snapshot.json")
+#: Набор по умолчанию — выгрузка заказчика; синтетика — если её нет.
+_DATA = Path(__file__).resolve().parents[2] / "data"
+DEFAULT_SNAPSHOT = (_DATA / "beeline" / "vostok" / "snapshot.json"
+                    if (_DATA / "beeline" / "vostok" / "snapshot.json").exists()
+                    else _DATA / "seed" / "snapshot.json")
 
 
 @asynccontextmanager
@@ -28,7 +31,8 @@ async def lifespan(app: FastAPI):
     if not Path(snapshot).exists():
         raise RuntimeError(
             f"Датасет не найден: {snapshot}\n"
-            f"Сгенерируйте его командой: py -3.11 data/generate.py")
+            f"Соберите его: py -3.11 data/import_beeline.py "
+            f"(выгрузка заказчика) или py -3.11 data/generate.py (синтетика)")
     routes.bind(PlanningService(snapshot))
     yield
 

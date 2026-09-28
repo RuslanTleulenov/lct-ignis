@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { Dataset, Engineer, EngineerInput } from '../api'
+import type { Dataset, Engineer, EngineerInput, Transport } from '../api'
+import { VEHICLE_LABEL } from '../colors'
 import { outsideArea, PointPicker } from './PointPicker'
 
 /**
@@ -10,9 +11,9 @@ import { outsideArea, PointPicker } from './PointPicker'
  * надёжнее строки адреса и не требует внешнего сервиса.
  */
 
-const VEHICLES: [EngineerInput['vehicle_type'], string][] = [
-  ['car', 'Легковой'], ['van', 'Фургон'], ['walk_transit', 'Пешком + метро'],
-]
+// Справочник ТЗ: четыре типа транспорта, у инженера ровно один.
+const VEHICLES = (Object.keys(VEHICLE_LABEL) as Transport[]).map(
+  (v) => [v, VEHICLE_LABEL[v]] as [Transport, string])
 
 const EMPTY: EngineerInput = {
   name: '', skills: {}, shift_start: '09:00', shift_end: '18:00',
@@ -55,7 +56,8 @@ export function EngineerForm({
 
   const specs = Object.entries(dataset.specializations)
   const skillRows = Object.entries(form.skills)
-  const canCarryBulky = form.vehicle_type !== 'walk_transit'
+  const canCarryBulky = form.vehicle_type === 'car'
+  const withLevels = dataset.uses_levels
 
   // Пеший инженер не увезёт габарит: снимаем такие позиции сразу, чтобы
   // человек не получил отказ сервера после заполнения всей формы.
@@ -90,8 +92,7 @@ export function EngineerForm({
             <label className="field">
               <span>Транспорт</span>
               <select value={form.vehicle_type}
-                      onChange={(e) => set('vehicle_type',
-                        e.target.value as EngineerInput['vehicle_type'])}>
+                      onChange={(e) => set('vehicle_type', e.target.value as Transport)}>
                 {VEHICLES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
               </select>
             </label>
@@ -129,7 +130,7 @@ export function EngineerForm({
             </label>
           </div>
 
-          <h3>Квалификация</h3>
+          <h3>Навыки</h3>
           <div className="chips">
             {specs.map(([code, label]) => {
               const level = form.skills[code]
@@ -138,10 +139,11 @@ export function EngineerForm({
                   <button className="chip-btn" onClick={() => {
                     const next = { ...form.skills }
                     if (level) delete next[code]
-                    else next[code] = 2
+                    else if (skillRows.length >= 3) return   // ТЗ: не больше трёх
+                    else next[code] = withLevels ? 2 : 1
                     set('skills', next)
                   }}>{label}</button>
-                  {level && (
+                  {level && withLevels && (
                     <select value={level} onChange={(e) =>
                       set('skills', { ...form.skills, [code]: Number(e.target.value) })}>
                       {[1, 2, 3, 4].map((n) => <option key={n} value={n}>ур. {n}</option>)}
@@ -151,12 +153,13 @@ export function EngineerForm({
               )
             })}
           </div>
-          {!skillRows.length && (
-            <div className="muted" style={{ fontSize: 12 }}>
-              Выберите хотя бы одну специализацию — без неё заявки назначать не из чего.
-            </div>
-          )}
+          <div className="muted" style={{ fontSize: 12 }}>
+            {!skillRows.length
+              ? 'Выберите хотя бы один навык — без него заявки назначать не из чего.'
+              : 'От одного до трёх навыков из справочника (ТЗ, п. 2.4).'}
+          </div>
 
+          {dataset.uses_equipment && (<>
           <h3>Оборудование на руках</h3>
           <div className="chips">
             {dataset.equipment.map((q) => {
@@ -178,8 +181,9 @@ export function EngineerForm({
             ⬛ — габаритное, доступно только с автомобилем. Недостающее инженер
             получит утром на складе.
           </div>
+          </>)}
 
-          <h3>Дом — точка выезда</h3>
+          <h3>Стартовая точка</h3>
           <label className="field" style={{ marginBottom: 10 }}>
             <span>Адрес</span>
             <input value={form.home_address} placeholder="Улица, дом"

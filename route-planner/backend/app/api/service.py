@@ -12,26 +12,32 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
-from ..baseline.greedy import Comparison, compare, greedy_plan
-from ..domain.loader import load_dataset, save_engineers
+from ..baseline.control import control_plan
+from ..baseline.greedy import Comparison, compare, greedy_plan, tz_baseline
+from ..domain.importer import ImportError_, decode, read_table, snapshot_from_json,     snapshot_from_tables
+from .datasets import DatasetInfo, Registry
+from ..domain.loader import (load_dataset, parse_priority, parse_transport,
+                             save_engineers)
 from ..domain.models import (
-    Engineer, Job, Priority, TransportMode, hhmm_to_min, min_to_hhmm,
+    DayEvent, Engineer, Job, Priority, TransportMode, hhmm_to_min, min_to_hhmm,
     nominal_duration,
 )
 from ..explain.why_not import WhyNot, why_not
+from ..explain.route import RouteExplanation, explain_route
 from ..explain.why_this import Explanation, why_this
 from ..solver.engine import Plan, Weights, attach_geometry, solve
 from ..solver.replan import DayState, PlanDiff, project, replan, state_at
 from ..travel.provider import default_provider
 
 
-#: Границы, в которых выгружена дорожная сеть (см. data/fetch_osm.py).
-#: Дом за их пределами привяжется к ближайшей вершине графа за десятки
-#: километров, и маршрут поедет в никуда.
-SERVICE_AREA = (55.55, 37.30, 55.94, 37.88)
+#: Зона обслуживания — Москва и область. Точка вне дорожной выгрузки считается
+#: по прямой с коэффициентом (см. travel/osm.py), поэтому граница здесь только
+#: отсекает опечатки в координатах, а не ограничивает географию заявок.
+SERVICE_AREA = (54.2, 35.1, 56.9, 40.2)
 
 
 class PlanningService:
@@ -39,7 +45,86 @@ class PlanningService:
         self.snapshot = Path(snapshot)
         self.provider = default_provider()
         self._lock = threading.RLock()
+        self.registry = Registry()
         self.reset()
+
+    # -- наборы данных ----------------------------------------------------
+
+    def assumptions(self) -> list[str]:
+        """Допущения, принятые при подготовке набора, — из meta снимка."""
+        try:
+            raw = json.loads(self.snapshot.read_text(encoding="utf-8"))
+            return list(raw.get("meta", {}).get("assumptions", []))
+        except Exception:
+            return []
+
+    @property
+    def dataset_key(self) -> str | None:
+        return self.registry.key_for(self.snapshot)
+
+    def switch_dataset(self, key: str) -> DatasetInfo:
+        """Переключиться на встроенный или загруженный набор. День сбрасывается."""
+        with self._lock:
+            info = self.registry.get(key)
+            self.snapshot = info.path
+            self.reset()
+            return info
+
+    def upload_dataset(self, files: dict[str, bytes], name: str = "") -> DatasetInfo:
+        """Принять CSV/JSON, собрать снимок, зарегистрировать и переключиться.
+
+        files: имя файла -> содержимое. Один .json — снимок сервиса либо
+        {jobs, engineers, events}; либо CSV-таблицы, где файл с заявками
+        угадывается по имени (jobs/заявки), с инженерами — по (engineers/инженеры),
+        с событиями — по (events/события).
+        """
+        geocode = self._geocoder()
+        jsons = {n: b for n, b in files.items() if n.lower().endswith(".json")}
+        if jsons:
+            n, b = next(iter(jsons.items()))
+            try:
+                data = json.loads(decode(b))
+            except json.JSONDecodeError as exc:
+                raise ImportError_([f"{n}: не JSON — {exc.msg} (строка {exc.lineno})"])
+            snapshot = snapshot_from_json(data, geocode)
+            title = name or snapshot["meta"].get("title") or n
+        else:
+            def pick(*needles):
+                for n, b in files.items():
+                    low = n.lower()
+                    if any(x in low for x in needles):
+                        return read_table(decode(b))
+                return None
+            jobs = pick("job", "заявк", "orders", "tasks")
+            engineers = pick("engineer", "инженер", "brigad", "бригад", "staff")
+            events = pick("event", "событ")
+            if jobs is None or engineers is None:
+                raise ImportError_(["нужны два CSV: с заявками (jobs/заявки в имени) "
+                                    "и с инженерами (engineers/инженеры в имени)"])
+            title = name or "Загруженный набор"
+            snapshot = snapshot_from_tables(jobs, engineers, events, title=title,
+                                            geocode=geocode)
+            snapshot["meta"]["title"] = title
+        info = self.registry.register_upload(snapshot, title)
+        return self.switch_dataset(info.key)
+
+    def _geocoder(self):
+        """Геокодер для адресов без координат: кеш заказчика плюс сеть."""
+        try:
+            import sys
+            data_dir = Path(__file__).resolve().parents[3] / "data"
+            if str(data_dir) not in sys.path:
+                sys.path.insert(0, str(data_dir))
+            from geocode import Geocoder            # noqa: WPS433
+            gc = Geocoder(online=True)
+        except Exception:
+            return None
+
+        def lookup(address: str, district: str) -> tuple[float, float, str]:
+            geo = gc.lookup(address, district)
+            gc.save()
+            return geo.lat, geo.lon, geo.precision
+        return lookup
 
     # -- жизненный цикл ---------------------------------------------------
 
@@ -208,7 +293,7 @@ class PlanningService:
             fail("Укажите заказчика")
 
         try:
-            priority = Priority(str(data.get("priority", "P3")))
+            priority = parse_priority(str(data.get("priority", "normal")))
         except ValueError:
             fail(f"Неизвестный приоритет: {data.get('priority')}")
 
@@ -229,24 +314,23 @@ class PlanningService:
         if tw_end <= self.now:
             fail(f"Окно закрылось в {min_to_hhmm(tw_end)}, "
                  f"сейчас {min_to_hhmm(self.now)} — заявку уже не выполнить")
-        # Окно обязано вмещать сами работы: иначе заявка невыполнима по
-        # построению, и солвер честно отложит её — но виноваты будут данные.
-        if tw_end - tw_start < duration:
-            fail(f"Окно короче норматива работ ({duration} мин) — "
-                 f"расширьте его или снизьте категорию сложности")
-
         lat, lon = float(data.get("lat", 0)), float(data.get("lon", 0))
         south, west, north, east = SERVICE_AREA
         if not (south <= lat <= north and west <= lon <= east):
             fail("Объект вне зоны обслуживания — укажите адрес в пределах города")
 
         # SLA считается от момента поступления, как и в генераторе.
-        if priority is Priority.P1:
+        if priority is Priority.URGENT:
             sla = min(self.now + 4 * 60, self.day_end)
-        elif priority is Priority.P2:
-            sla = min(self.now + 8 * 60, self.day_end)
         else:
             sla = tw_end
+
+        transport = None
+        if data.get("required_transport"):
+            try:
+                transport = parse_transport(str(data["required_transport"]))
+            except ValueError:
+                fail(f"Неизвестный тип транспорта: {data['required_transport']}")
 
         seq = len(self.ds.jobs) + 1
         used = {j.id for j in self.ds.jobs}
@@ -273,7 +357,54 @@ class PlanningService:
             created_at_min=self.now,
             known_at_day_start=False,
             contact_phone=str(data.get("contact_phone", "")).strip(),
+            required_transport=transport,
         )
+
+    def add_event(self, kind: str, payload: str, time_limit_s: int = 3,
+                  stability: int = 200) -> tuple[DayEvent, PlanDiff | None]:
+        """Событие по требованию диспетчера: отмена заявки или недоступность
+        инженера с текущего момента — и немедленный пересчёт остатка дня.
+
+        Это второй и третий сценарии перепланирования из ТЗ (п. 2.1, 6); первый —
+        срочная заявка — принимается через `add_job`.
+        """
+        with self._lock:
+            if kind == "job_cancelled":
+                job = next((j for j in self.ds.jobs if j.id == payload), None)
+                if job is None:
+                    raise ValueError(f"Нет заявки {payload}")
+                if payload in self.completed:
+                    raise ValueError(f"Заявка {payload} уже выполнена — отменять нечего")
+                if any(e.type == kind and e.payload == payload for e in self.ds.events):
+                    raise ValueError(f"Заявка {payload} уже отменена")
+                comment = f"{job.customer} отменил визит (диспетчер)"
+            elif kind == "engineer_unavailable":
+                eng = next((e for e in self.ds.engineers if e.id == payload), None)
+                if eng is None:
+                    raise ValueError(f"Нет инженера {payload}")
+                if any(e.type == kind and e.payload == payload for e in self.ds.events):
+                    raise ValueError(f"{eng.name} уже выведен из смены")
+                # без рода: в выгрузке заказчика исполнители — «Бригада Соколов»
+                comment = f"{eng.name}: недоступность с {min_to_hhmm(self.now)} (диспетчер)"
+            else:
+                raise ValueError("Тип события: job_cancelled или engineer_unavailable")
+
+            event = DayEvent(at=self.now, type=kind, payload=payload, comment=comment)
+            self.ds.events.append(event)
+            self.ds.events.sort(key=lambda e: e.at)
+            self._note("event", comment, event_type=kind)
+
+            if self.plan is None:
+                self.version += 1
+                return event, None
+            st = state_at(self.ds.events, self.now, self.completed)
+            self.plan, self.diff = replan(
+                self.ds, self.plan, st, weights=Weights(stability=stability),
+                provider=self.provider, time_limit_s=time_limit_s, pins=self.pins)
+            attach_geometry(self.plan, self.ds, self.provider)
+            self.version += 1
+            self._note("replan", self.diff.summary(), affected=self.diff.affected)
+            return event, self.diff
 
     # -- справочник инженеров ---------------------------------------------
 
@@ -359,7 +490,7 @@ class PlanningService:
                 fail(f"Уровень по «{self.ds.specializations[spec]}» должен быть от 1 до 4")
 
         try:
-            vehicle = TransportMode(str(data.get("vehicle_type", "car")))
+            vehicle = parse_transport(str(data.get("vehicle_type", "car")))
         except ValueError:
             fail(f"Неизвестный тип транспорта: {data.get('vehicle_type')}")
 
@@ -495,6 +626,12 @@ class PlanningService:
                 return None
             return why_this(self.ds, self.plan, self.ds.job(job_id), self.provider)
 
+    def explain_route(self, engineer_id: str) -> RouteExplanation | None:
+        with self._lock:
+            if self.plan is None:
+                return None
+            return explain_route(self.ds, self.plan, engineer_id)
+
     def why_not(self, job_id: str) -> WhyNot | None:
         with self._lock:
             if self.plan is None:
@@ -507,17 +644,27 @@ class PlanningService:
 
     # -- сравнение с ручным планированием ---------------------------------
 
-    def compare_with_manual(self, order: str = "edf", pick: str = "nearest"
-                            ) -> tuple[Plan, Plan, Comparison]:
+    def compare_with_manual(self, baseline: str = "tz"
+                            ) -> tuple[Plan, Plan, Comparison, Plan | None]:
+        """Утренний план против базового варианта и, если есть, против факта.
+
+        baseline: "tz" — первому подходящему по порядку (ТЗ, п. 2.3);
+                  "smart" — по срочности окна ближайшему.
+        Факт — распределение диспетчера заказчика из контрольного файла;
+        у синтетики его нет.
+        """
         with self._lock:
             if self.morning_plan is None:
                 raise RuntimeError("План ещё не построен")
-            self.baseline = greedy_plan(
-                self.ds, self.morning_jobs, provider=self.provider,
-                onboard=self.morning_plan.onboard,
-                pickup=self.morning_plan.pickup, order=order, pick=pick)
+            common = dict(provider=self.provider, onboard=self.morning_plan.onboard,
+                          pickup=self.morning_plan.pickup)
+            if baseline == "smart":
+                self.baseline = greedy_plan(self.ds, self.morning_jobs, **common)
+            else:
+                self.baseline = tz_baseline(self.ds, self.morning_jobs, **common)
+            fact = control_plan(self.ds, self.morning_jobs, self.provider)
             return (self.baseline, self.morning_plan,
-                    compare(self.baseline, self.morning_plan))
+                    compare(self.baseline, self.morning_plan), fact)
 
     # -- справочники ------------------------------------------------------
 

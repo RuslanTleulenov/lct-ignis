@@ -10,11 +10,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (APIRouter, File, Form, HTTPException, UploadFile, WebSocket,
+                     WebSocketDisconnect)
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from ..domain.models import hhmm_to_min, min_to_hhmm
+from ..domain.importer import ImportError_
+from ..explain.why_not import SKILL_REASONS
+from ..domain.models import Priority, TransportMode, hhmm_to_min, min_to_hhmm
 from .serialize import engineer_out, job_out, plan_out
 from .service import PlanningService
 
@@ -112,8 +115,17 @@ def dataset() -> dict:
     ds = service.ds
     return {
         "date": ds.date,
+        "key": service.dataset_key,
+        "title": ds.title,
+        "assumptions": service.assumptions(),
+        "return_to_start": ds.return_to_start,
+        "uses_levels": ds.uses_levels,
+        "uses_equipment": ds.uses_equipment,
         "day": [min_to_hhmm(service.day_start), min_to_hhmm(service.day_end)],
         "specializations": ds.specializations,
+        # справочники ТЗ — интерфейс берёт подписи отсюда, а не хранит свои
+        "transport_types": [{"id": m.value, "name": m.label} for m in TransportMode],
+        "priorities": [{"id": p.value, "name": p.label} for p in Priority],
         "work_types": [
             {"id": w.id, "name": w.name, "specialization": w.specialization,
              "min_level": w.min_level, "base_duration_min": w.base_duration_min,
@@ -206,10 +218,14 @@ def jobs() -> list[dict]:
             for s in r.stops:
                 if s.kind == "job" and s.job_id:
                     assigned[s.job_id] = r.engineer_id
+    cancelled = {e.payload for e in service.ds.events
+                 if e.type == "job_cancelled" and e.at <= service.now}
     out = []
     for job in service.ds.jobs:
         if job.id in service.completed:
             status = "done"
+        elif job.id in cancelled:
+            status = "cancelled"
         elif job.id in assigned:
             status = "planned"
         elif plan and job.id in plan.unassigned:
@@ -234,7 +250,8 @@ class JobIn(BaseModel):
     # Диапазон проверяет сервис, а не схема: pydantic отдаёт наружу свой
     # массив ошибок, а диспетчеру нужна фраза на русском.
     complexity: int = 3
-    priority: str = "P3"
+    priority: str = "normal"
+    required_transport: str | None = None
     tw_start: str
     tw_end: str
     tw_hard: bool = False
@@ -380,6 +397,23 @@ async def reset() -> dict:
 # Объяснимость
 # --------------------------------------------------------------------------
 
+@router.get("/plan/explain-route/{engineer_id}")
+def explain_route(engineer_id: str) -> dict:
+    """Почему маршрут инженера такой — ТЗ, п. 2.4.2, последний пункт."""
+    if not service.ready:
+        raise HTTPException(409, "Сначала постройте план")
+    exp = service.explain_route(engineer_id)
+    if exp is None:
+        raise HTTPException(404, f"Инженера {engineer_id} в текущем плане нет")
+    return {
+        "engineer_id": exp.engineer_id,
+        "engineer_name": exp.engineer_name,
+        "headline": exp.headline,
+        "constraints": exp.constraints,
+        "choices": exp.choices,
+    }
+
+
 @router.get("/plan/explain/{job_id}")
 def explain(job_id: str) -> dict:
     if not service.ready:
@@ -417,6 +451,11 @@ def _why_not_payload(job_id: str) -> dict:
             for b in wn.qualified
         ],
         "blocked_total": len(wn.blockers),
+        # сколько в службе вообще и сколько из них проходят по навыку —
+        # для честной фразы «из N инженеров навык есть у M»
+        "engineers_total": len(service.ds.engineers),
+        "skill_ok": len(service.ds.engineers)
+                    - sum(n for r, n in wn.counts.items() if r in SKILL_REASONS),
         "feasible_with_shift": [
             {"engineer_name": n, "detail": d} for n, d in wn.feasible_with_shift
         ],
@@ -441,22 +480,118 @@ def why_not_one(job_id: str) -> dict:
 # --------------------------------------------------------------------------
 
 @router.get("/plan/compare")
-async def compare_manual(order: str = "edf", pick: str = "nearest") -> dict:
+async def compare_manual(baseline: str = "tz") -> dict:
+    """Утренний план против базового варианта ТЗ (или «грамотного диспетчера»)
+    и против факта — распределения диспетчера заказчика, если оно есть."""
     if not service.ready:
         raise HTTPException(409, "Сначала постройте план")
-    base, opt, cmp = await run_in_threadpool(
-        service.compare_with_manual, order, pick)
-    return {
+    if baseline not in ("tz", "smart"):
+        raise HTTPException(422, "baseline: tz или smart")
+    base, opt, cmp, fact = await run_in_threadpool(
+        service.compare_with_manual, baseline)
+
+    def per_engineer(plan):
+        return [{"engineer_id": r.engineer_id, "engineer_name": r.engineer_name,
+                 "job_count": r.job_count, "travel_min": r.travel_min,
+                 "travel_km": r.travel_km}
+                for r in plan.routes]
+
+    out = {
         "scope": "morning",
+        "baseline": baseline,
+        "baseline_label": ("Базовый вариант по ТЗ" if baseline == "tz"
+                           else "Грамотный диспетчер"),
+        "baseline_note": (
+            "Заявки по порядку поступления, каждая — первому по порядку "
+            "подходящему инженеру; порядок визитов равен порядку назначения "
+            "(ТЗ, п. 2.3)." if baseline == "tz" else
+            "Заявки по срочности окна, каждая — ближайшему подходящему инженеру."),
         "note": "Сравнение считается по утреннему плану: после перепланирования "
-                "день уже частично прожит, и ручной план с нуля с ним несопоставим.",
+                "день уже частично прожит, и базовый план с нуля с ним несопоставим.",
         "baseline_kpi": base.kpi,
         "optimized_kpi": opt.kpi,
         "rows": [{"label": lb, "manual": m, "optimized": o, "effect": d}
                  for lb, m, o, d in cmp.rows],
-        "baseline_routes": [
-            {"engineer_id": r.engineer_id, "job_count": r.job_count,
-             "travel_min": r.travel_min, "travel_km": r.travel_km}
-            for r in base.routes
-        ],
+        "baseline_routes": per_engineer(base),
+        "optimized_routes": per_engineer(opt),
+        "fact": None,
     }
+    if fact is not None:
+        from ..baseline.greedy import compare as _compare
+        fc = _compare(fact, opt)
+        out["fact"] = {
+            "label": "Факт: распределение диспетчера",
+            "note": "Как заявки раскидал диспетчер заказчика 17.08.2026 (контрольное "
+                    "распределение). Порядок визитов восстановлен по началу окна, "
+                    "время в пути — наше; статусы — из выгрузки.",
+            "kpi": fact.kpi,
+            "rows": [{"label": lb, "manual": m, "optimized": o, "effect": d}
+                     for lb, m, o, d in fc.rows],
+            "routes": per_engineer(fact),
+            "statuses": {"done": fact.kpi.get("control_done", 0),
+                         "overdue": fact.kpi.get("control_overdue", 0),
+                         "cancelled": fact.kpi.get("control_cancelled", 0),
+                         "unsent": fact.kpi.get("jobs_unassigned", 0)},
+        }
+    return out
+
+
+# --------------------------------------------------------------------------
+# События по требованию: отмена заявки, недоступность инженера
+# --------------------------------------------------------------------------
+
+class EventIn(BaseModel):
+    type: str                       # job_cancelled | engineer_unavailable
+    id: str                         # заявка либо инженер
+    time_limit_s: int = 3
+    stability: int = 200
+
+
+@router.post("/events")
+async def add_event(body: EventIn) -> dict:
+    """Событие с текущего момента и немедленный пересчёт остатка дня."""
+    try:
+        event, diff = await run_in_threadpool(
+            service.add_event, body.type, body.id, body.time_limit_s, body.stability)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    await hub.broadcast({"type": "plan", "reason": "event", "version": service.version})
+    return {
+        "event": {"at": min_to_hhmm(event.at), "type": event.type,
+                  "payload": event.payload, "comment": event.comment},
+        "plan": _plan_payload(diff) if service.ready else None,
+    }
+
+
+# --------------------------------------------------------------------------
+# Наборы данных
+# --------------------------------------------------------------------------
+
+@router.get("/datasets")
+def datasets() -> dict:
+    return {"active": service.dataset_key, "items": service.registry.listing()}
+
+
+@router.post("/datasets/{key}/activate")
+async def activate_dataset(key: str) -> dict:
+    try:
+        info = await run_in_threadpool(service.switch_dataset, key)
+    except KeyError:
+        raise HTTPException(404, f"Нет такого набора: {key}")
+    await hub.broadcast({"type": "dataset", "version": service.version})
+    return {"ok": True, "active": info.key, "title": info.title}
+
+
+@router.post("/datasets/upload")
+async def upload_dataset(files: list[UploadFile] = File(...),
+                         name: str = Form("")) -> dict:
+    """Загрузить набор: snapshot.json, JSON {jobs, engineers, events} либо
+    CSV-таблицы заявок и инженеров (см. domain/importer.py)."""
+    payload = {f.filename or f"file{i}": await f.read() for i, f in enumerate(files)}
+    try:
+        info = await run_in_threadpool(service.upload_dataset, payload, name)
+    except ImportError_ as exc:
+        raise HTTPException(422, {"message": "Файл не удалось прочитать",
+                                  "problems": exc.problems})
+    await hub.broadcast({"type": "dataset", "version": service.version})
+    return {"ok": True, "active": info.key, "title": info.title, "note": info.note}

@@ -115,7 +115,6 @@ def test_new_job_is_not_persisted(service):
     ({"work_type_id": "WT-99"}, "тип работ"),
     ({"complexity": 9}, "от 1 до 5"),
     ({"tw_start": "14:00", "tw_end": "10:00"}, "раньше начала"),
-    ({"tw_start": "10:00", "tw_end": "10:20"}, "короче норматива"),
     ({"tw_start": "06:00", "tw_end": "07:00"}, "закрылось"),
     ({"lat": 59.93, "lon": 30.33}, "вне зоны обслуживания"),
     ({"priority": "P9"}, "приоритет"),
@@ -125,9 +124,14 @@ def test_validation_rejects(service, patch, message):
         service.add_job(payload(**patch))
 
 
-def test_window_must_fit_the_work(service):
-    """Окно короче норматива делает заявку невыполнимой по построению."""
+def test_short_window_is_allowed(service):
+    """Окно короче норматива — не ошибка: по ТЗ оно ограничивает начало работ.
+
+    Слот заказчика «10:00–12:00» под двухчасовой ремонт значит «мастер придёт
+    с десяти до двенадцати», а не «уйдёт к двенадцати». Раньше такая заявка
+    отвергалась на вводе, и диспетчер не мог завести половину реальных слотов.
+    """
     wt = service.ds.work_types["WT-05"]        # самый длинный норматив
-    with pytest.raises(ValueError, match="короче норматива"):
-        service.add_job(payload(work_type_id=wt.id, complexity=5,
-                                tw_start="10:00", tw_end="12:00"))
+    job, _ = service.add_job(payload(work_type_id=wt.id, complexity=5,
+                                     tw_start="10:00", tw_end="12:00"))
+    assert job.duration_min > 120 and job.tw_end - job.tw_start == 120

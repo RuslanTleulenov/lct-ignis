@@ -1,5 +1,5 @@
-import { useMemo } from 'react'
-import type { Engineer as Eng, Job, Plan } from '../api'
+import { useEffect, useMemo, useState } from 'react'
+import { api, type Engineer as Eng, type Job, type Plan, type RouteExplanation } from '../api'
 import { engineerColor, PRIORITY_COLOR, VEHICLE_LABEL } from '../colors'
 import { dur, initials, num, plural } from '../format'
 import { go } from '../router'
@@ -14,12 +14,24 @@ interface Props {
   dataset: import('../api').Dataset | null
   selectedJob: string | null
   onSelectJob: (id: string) => void
+  onUnavailable: (engineerId: string) => void
+  busy: boolean
 }
 
 export function EngineerScreen({ id, plan, engineers, jobs, dataset,
-                                 selectedJob, onSelectJob }: Props) {
+                                 selectedJob, onSelectJob, onUnavailable, busy: working }: Props) {
   const eng = engineers.find((e) => e.id === id)
   const route = plan?.routes.find((r) => r.engineer_id === id) ?? null
+
+  // Объяснение маршрута считается по готовому плану — перечитываем при каждой
+  // его версии, иначе после пересчёта на карточке останется старый разбор.
+  const [why, setWhy] = useState<RouteExplanation | null>(null)
+  useEffect(() => {
+    if (!plan || !route) { setWhy(null); return }
+    let alive = true
+    api.explainRoute(id).then((r) => { if (alive) setWhy(r) }).catch(() => setWhy(null))
+    return () => { alive = false }
+  }, [id, plan, route])
 
   const order = useMemo(() => engineers.map((e) => e.id), [engineers])
   const pos = order.indexOf(id)
@@ -48,6 +60,11 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <a href="#/engineers" className="dim" style={{ fontSize: 13 }}>← Все инженеры</a>
         <span className="spacer" />
+        {plan && (
+          <button className="ghost" disabled={working}
+                  title="Заболел, авария, отозван — заявки уйдут другим с этого момента"
+                  onClick={() => onUnavailable(id)}>Вывести из смены</button>
+        )}
         <button className="ghost" disabled={!prev}
                 onClick={() => prev && go(`/engineers/${prev}`)}>‹ Пред.</button>
         <button className="ghost" disabled={!next}
@@ -64,13 +81,13 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
             <span className="pill">смена {eng.shift[0]}–{eng.shift[1]}</span>
             {eng.skills.map((s) => (
               <span key={s.specialization} className="pill accent">
-                {s.specialization_name} ур. {s.level}
+                {s.specialization_name}{dataset?.uses_levels ? ` ур. ${s.level}` : ''}
               </span>
             ))}
             {route?.pickup_warehouse && (
               <span className="pill">получение оборудования: склад {route.pickup_warehouse}</span>
             )}
-            {!eng.can_carry_bulky && (
+            {dataset?.uses_equipment && !eng.can_carry_bulky && (
               <span className="pill warn">без перевозки габарита</span>
             )}
           </div>
@@ -147,7 +164,8 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
                 )}
               </div>
 
-              {/* ---- оборудование ---- */}
+              {/* ---- оборудование: только у наборов, где оно есть ---- */}
+              {dataset?.uses_equipment && (
               <div className="card">
                 <h2>Оборудование на руках
                   <span className="hint">
@@ -161,8 +179,36 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
                   ))}
                 </div>
               </div>
+              )}
             </div>
           </div>
+
+          {/* ---- почему маршрут такой: ТЗ, п. 2.4.2 ---- */}
+          {why && (
+            <div className="card">
+              <h2>Почему маршрут такой<span className="hint">{why.headline}</span></h2>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+                <div>
+                  <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase',
+                    letterSpacing: .4, marginBottom: 6 }}>Что диктовали ограничения</div>
+                  {why.constraints.map((t, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6, fontSize: 13 }}>
+                      <span style={{ color: 'var(--accent)' }}>●</span><span>{t}</span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase',
+                    letterSpacing: .4, marginBottom: 6 }}>Что выбрала оптимизация</div>
+                  {why.choices.map((t, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6, fontSize: 13 }}>
+                      <span style={{ color: 'var(--info)' }}>●</span><span>{t}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ---- визиты ---- */}
           <div className="card">
@@ -190,9 +236,11 @@ export function EngineerScreen({ id, plan, engineers, jobs, dataset,
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                           <span className="dot" style={{
-                            background: PRIORITY_COLOR[s.priority ?? 'P3'] }} />
+                            background: PRIORITY_COLOR[s.priority ?? 'normal'] }} />
                           <b>{s.customer}</b>
-                          <span className="muted">{s.priority}</span>
+                          {s.priority === 'urgent' && (
+                            <span className="muted" style={{ color: PRIORITY_COLOR.urgent }}>срочная</span>
+                          )}
                         </div>
                         <div className="muted" style={{ fontSize: 12 }}>
                           {s.work_type} · {job?.address ?? s.district}

@@ -40,10 +40,16 @@ def job_out(ds: Dataset, job: Job, status: str = "") -> dict:
         "window": [min_to_hhmm(job.tw_start), min_to_hhmm(job.tw_end)],
         "window_hard": job.tw_hard,
         "priority": job.priority.value,
+        "priority_label": job.priority.label,
         "sla_deadline": min_to_hhmm(job.sla_deadline),
         "known_at_day_start": job.known_at_day_start,
         "contact_phone": job.contact_phone,
         "status": status,
+        "required_transport": (ds.required_transport(job).value
+                               if ds.required_transport(job) else None),
+        "required_transport_label": (ds.required_transport(job).label
+                                     if ds.required_transport(job) else None),
+        "geo_precision": job.geo_precision,
     }
 
 
@@ -76,6 +82,7 @@ def stop_out(ds: Dataset, stop: Stop) -> dict:
             "window": [min_to_hhmm(job.tw_start), min_to_hhmm(job.tw_end)],
             "window_hard": job.tw_hard,
             "sla_deadline": min_to_hhmm(job.sla_deadline),
+            "approx": job.geo_precision != "house",
         }
     return out
 
@@ -123,6 +130,11 @@ def plan_out(ds: Dataset, plan: Plan, plan_id: str = "",
             "moved": [{"job_id": j, "from": a, "to": b} for j, a, b in diff.moved],
             "added": [{"job_id": j, "to": e} for j, e in diff.added],
             "removed": diff.removed,
+            "reordered": [{"job_id": j, "engineer_id": e, "from": a, "to": b}
+                          for j, e, a, b in diff.reordered],
+            "shifted": [{"job_id": j, "engineer_id": e,
+                         "from": min_to_hhmm(a), "to": min_to_hhmm(b)}
+                        for j, e, a, b in diff.shifted],
             "kept": diff.kept,
             "affected": diff.affected,
             "untouched": diff.untouched,
@@ -147,6 +159,7 @@ def engineer_out(ds: Dataset, eng, onboard: dict[str, set[str]] | None = None) -
         "break_window": [min_to_hhmm(eng.break_from), min_to_hhmm(eng.break_to)],
         "break_min": eng.break_min,
         "vehicle_type": eng.vehicle_type.value,
+        "vehicle_label": eng.vehicle_type.label,
         "can_carry_bulky": eng.vehicle_type.can_carry_bulky,
         "home": {"lat": eng.home_lat, "lon": eng.home_lon,
                  "address": eng.home_address},

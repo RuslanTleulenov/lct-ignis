@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { Compare, Dataset, Engineer, Plan, WhyNot } from '../api'
+import type { Compare, Dataset, DatasetInfo, Engineer, Plan, WhyNot } from '../api'
 import { PRIORITY_COLOR, VEHICLE_LABEL } from '../colors'
 import { go } from '../router'
 
@@ -84,47 +84,70 @@ export function BacklogScreen({ plan, whyNotAll }: {
 
 /* ------------------------------------------------------------------- Эффект */
 
-export function EffectScreen({ compare }: { compare: Compare | null }) {
+export function EffectScreen({ compare, onBaseline }: {
+  compare: Compare | null
+  onBaseline: (b: 'tz' | 'smart') => void
+}) {
   if (!compare) {
     return (
       <div className="card">
         <div className="empty">
-          Постройте план — посчитаю эффект против ручного планирования.
+          Постройте план — посчитаю эффект против базового варианта.
         </div>
       </div>
     )
   }
+  const fact = compare.fact
+  // Строки трёх столбцов сшиваются по названию показателя: у факта свой
+  // набор сравнений, но подписи те же.
+  const factByLabel = new Map((fact?.rows ?? []).map((r) => [r.label, r]))
+
+  // Обязательные метрики ТЗ, п. 2.3: число исполнителей и пробег по каждому.
+  const perEngineer = compare.optimized_routes
+    .filter((r) => r.job_count > 0)
+    .sort((a, b) => b.travel_km - a.travel_km)
+  const total = (rows: typeof perEngineer) => rows.reduce((a, r) => a + r.travel_km, 0)
+
   return (
     <div className="stack">
       <div className="card">
-        <h2>Эффект</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <h2 style={{ margin: 0 }}>Эффект</h2>
+          <span className="spacer" />
+          <span className="muted" style={{ fontSize: 12 }}>базовый вариант:</span>
+          <div className="seg">
+            <button className={compare.baseline === 'tz' ? 'on' : ''}
+                    onClick={() => onBaseline('tz')}>по ТЗ</button>
+            <button className={compare.baseline === 'smart' ? 'on' : ''}
+                    onClick={() => onBaseline('smart')}>грамотный диспетчер</button>
+          </div>
+        </div>
         <p className="muted" style={{ fontSize: 12 }}>
-          Сравнение с ручным планированием на тех же {compare.optimized_kpi.jobs_total}{' '}
-          утренних заявках.
+          На тех же {compare.optimized_kpi.jobs_total} утренних заявках.{' '}
+          {compare.baseline_note}
         </p>
-        {/* Колонок две, без отдельного «Эффекта»: в макете величины стоят
-            рядом, и разница читается сама. Строка про SLA несёт пояснение
-            прямо под названием — она единственная, где мы хуже. */}
         <table className="grid" style={{ marginTop: 10 }}>
           <thead>
             <tr>
               <th>Показатель</th>
-              <th className="r" style={{ width: 170 }}>Сервис</th>
-              <th className="r" style={{ width: 170 }}>Ручной план</th>
+              <th className="r" style={{ width: 150 }}>Сервис</th>
+              <th className="r" style={{ width: 150 }}>{compare.baseline_label}</th>
+              {fact && <th className="r" style={{ width: 150 }}>Факт диспетчера</th>}
             </tr>
           </thead>
           <tbody>
             {compare.rows.map((r, i) => {
               const lead = i === 0
               const worse = r.effect.startsWith('+') && !r.effect.includes('✓')
+              const f = factByLabel.get(r.label)
               return (
                 <tr key={r.label} style={lead ? { background: 'var(--accent-soft)' } : undefined}>
                   <td style={{ fontWeight: lead ? 700 : 400,
                                color: lead ? 'var(--ink)' : undefined }}>
                     {r.label}
-                    {worse && (
+                    {worse && r.label === 'Нарушений SLA' && (
                       <div style={{ color: 'var(--danger)', fontSize: 11.5, marginTop: 2 }}>
-                        У ручного плана меньше потому, что он не взял
+                        У базового варианта меньше потому, что он не взял
                         {' '}{compare.baseline_kpi.jobs_unassigned}{' '}
                         неудобных заявок вовсе
                       </div>
@@ -135,31 +158,87 @@ export function EffectScreen({ compare }: { compare: Compare | null }) {
                     color: worse ? 'var(--danger)' : lead ? 'var(--accent)' : 'var(--ink)',
                   }}>{r.optimized}</td>
                   <td className="r num dim">{r.manual}</td>
+                  {fact && <td className="r num dim">{f?.manual ?? '—'}</td>}
                 </tr>
               )
             })}
+          </tbody>
+        </table>
+        {fact && (
+          <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+            {fact.note} По статусам выгрузки: выполнено {fact.statuses.done},
+            просрочено {fact.statuses.overdue}, отменено {fact.statuses.cancelled},
+            не отправлено {fact.statuses.unsent}.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Обязательные метрики ТЗ
+          <span className="hint">
+            задействовано {perEngineer.length} из {compare.optimized_routes.length}
+            {' '}· пробег {total(perEngineer).toFixed(1)} км
+          </span>
+        </h2>
+        <table className="grid">
+          <thead>
+            <tr>
+              <th>Исполнитель</th>
+              <th className="r" style={{ width: 90 }}>Заявок</th>
+              <th className="r" style={{ width: 110 }}>В пути</th>
+              <th className="r" style={{ width: 110 }}>Пробег, км</th>
+              {fact && <th className="r" style={{ width: 140 }}>Факт, км</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {compare.optimized_routes
+              .slice()
+              .sort((a, b) => b.job_count - a.job_count || b.travel_km - a.travel_km)
+              .map((r) => {
+                const f = fact?.routes.find((x) => x.engineer_id === r.engineer_id)
+                return (
+                  <tr key={r.engineer_id} className={r.job_count ? '' : 'dim'}>
+                    <td>{r.engineer_name}</td>
+                    <td className="r num">{r.job_count || '—'}</td>
+                    <td className="r num">{r.job_count ? `${r.travel_min} мин` : '—'}</td>
+                    <td className="r num" style={{ fontWeight: 700 }}>
+                      {r.job_count ? r.travel_km.toFixed(1) : '—'}
+                    </td>
+                    {fact && (
+                      <td className="r num dim">
+                        {f?.job_count ? `${f.travel_km.toFixed(1)} (${f.job_count} з.)` : '—'}
+                      </td>
+                    )}
+                  </tr>
+                )
+              })}
           </tbody>
         </table>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <div className="card">
-          <h2>Как считался baseline</h2>
+          <h2>Как считался базовый вариант</h2>
           <p className="dim">
-            За основу принято ручное планирование: заявки разбираются по срочности
-            окна доступа и передаются ближайшему подходящему инженеру, ранее
-            назначенное не пересматривается. Комплектация оборудованием и заезды
-            на склад совпадают с расчётными — сопоставляется качество
-            маршрутизации, а не условия выдачи инструмента.
+            {compare.baseline === 'tz'
+              ? 'Ровно по ТЗ, п. 2.3: заявки обрабатываются по порядку поступления и ' +
+                'назначаются первому по порядку во входных данных доступному инженеру, ' +
+                'который удовлетворяет обязательным ограничениям; порядок посещения ' +
+                'соответствует порядку назначения. Глобальная оптимизация не выполняется.'
+              : 'Грамотный диспетчер: заявки разбираются по срочности окна доступа и ' +
+                'передаются ближайшему подходящему инженеру, ранее назначенное не ' +
+                'пересматривается. Это честный потолок ручного планирования.'}
+            {' '}Комплектация оборудованием и заезды на склад совпадают с расчётными —
+            сопоставляется качество маршрутизации, а не условия выдачи инструмента.
           </p>
         </div>
         <div className="card">
           <h2>О расхождении по SLA</h2>
           <p className="dim">
-            При ручном планировании нарушений меньше только потому, что часть
-            заявок не принимается к исполнению вовсе. Для заказчика невыполненная
-            заявка хуже, чем выполненная с опозданием, поэтому ключевым
-            показателем принято «закрыто в срок».
+            У базового варианта нарушений может быть меньше только потому, что
+            часть заявок не принимается к исполнению вовсе. Для заказчика
+            невыполненная заявка хуже, чем выполненная с опозданием, поэтому
+            ключевым показателем принято «закрыто в срок».
           </p>
         </div>
       </div>
@@ -169,22 +248,41 @@ export function EffectScreen({ compare }: { compare: Compare | null }) {
 
 /* -------------------------------------------------------------- Справочники */
 
-export function ReferenceScreen({ dataset, engineers, plan }: {
+export function ReferenceScreen({ dataset, engineers, plan, datasets, onDataset }: {
   dataset: Dataset | null; engineers: Engineer[]; plan: Plan | null
+  datasets: DatasetInfo[]
+  onDataset: (action: { activate: string } | { upload: File[]; name: string }) => Promise<void>
 }) {
-  const [tab, setTab] = useState<'types' | 'equip' | 'wh' | 'staff'>('types')
+  const [tab, setTab] = useState<'data' | 'dicts' | 'types' | 'equip' | 'wh' | 'staff'>('data')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [files, setFiles] = useState<File[]>([])
+  const [name, setName] = useState('')
   if (!dataset) return <div className="empty">Загрузка…</div>
 
   /** На какой склад инженер заезжает утром — из построенного плана. */
   const pickupAt = (engineerId: string) =>
     plan?.routes.find((r) => r.engineer_id === engineerId)?.pickup_warehouse ?? null
 
-  // Четыре вкладки, как в макете: матрица совместимости живёт внутри
-  // «Типов работ», а не отдельным разделом.
-  const tabs = [
-    ['types', 'Типы работ'], ['equip', 'Оборудование'],
-    ['wh', 'Склады'], ['staff', 'Состав службы'],
-  ] as const
+  const run = async (action: Parameters<typeof onDataset>[0]) => {
+    setBusy(true); setError(null)
+    try {
+      await onDataset(action)
+      setFiles([]); setName('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Вкладки: данные и справочники ТЗ — всегда; оборудование и склады — только
+  // у наборов, где они есть (у выгрузки заказчика их нет).
+  const tabs = ([
+    ['data', 'Данные'], ['dicts', 'Справочники ТЗ'], ['types', 'Типы работ'],
+    ...(dataset.uses_equipment ? [['equip', 'Оборудование'], ['wh', 'Склады']] : []),
+    ['staff', 'Состав службы'],
+  ] as [typeof tab, string][])
 
   return (
     <div className="stack">
@@ -196,18 +294,127 @@ export function ReferenceScreen({ dataset, engineers, plan }: {
           ))}
         </div>
 
-        {/* Вкладка «Типы работ» — это и есть матрица совместимости: в макете
-            она не вынесена отдельно, а служит основным видом справочника. */}
+        {tab === 'data' && (
+          <div className="stack">
+            <div>
+              <h2 style={{ marginTop: 0 }}>Набор данных
+                <span className="hint">{dataset.title || dataset.date}</span>
+              </h2>
+              <div className="tiles">
+                {datasets.map((d) => (
+                  <div key={d.key} className={`tile${d.key === dataset.key ? ' accent' : ''}`}
+                       style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8,
+                                opacity: d.available ? 1 : .5 }}>
+                    <div style={{ fontWeight: 700 }}>{d.title}</div>
+                    <div className="muted" style={{ fontSize: 12 }}>{d.note}</div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span className="pill">{{ customer: 'выгрузка заказчика',
+                        synthetic: 'синтетика', uploaded: 'загружен' }[d.kind]}</span>
+                      <span className="spacer" />
+                      {d.key === dataset.key
+                        ? <span className="muted" style={{ fontSize: 12 }}>активен</span>
+                        : <button className="ghost" disabled={busy || !d.available}
+                                  onClick={() => run({ activate: d.key })}>Открыть</button>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <h2>Загрузить свой набор
+                <span className="hint">CSV или JSON — ТЗ, п. 2.1</span>
+              </h2>
+              <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+                Два CSV — заявки и инженеры (по имени файла: jobs/заявки,
+                engineers/инженеры), при желании третий с событиями; либо один JSON
+                со списками jobs, engineers, events; либо snapshot.json сервиса.
+                Поля — минимальные из ТЗ: id, адрес или координаты, длительность,
+                окно, приоритет, навык, транспорт. Адреса без координат
+                геокодируются.
+              </p>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input type="file" multiple accept=".csv,.json,text/csv,application/json"
+                       onChange={(e) => setFiles(Array.from(e.target.files ?? []))} />
+                <input value={name} placeholder="название набора (необязательно)"
+                       style={{ width: 260 }} onChange={(e) => setName(e.target.value)} />
+                <button className="primary" disabled={busy || !files.length}
+                        onClick={() => run({ upload: files, name })}>
+                  {busy ? 'Загружаю…' : 'Загрузить и открыть'}
+                </button>
+              </div>
+              {error && (
+                <pre className="err" style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>{error}</pre>
+              )}
+            </div>
+
+            {dataset.assumptions.length > 0 && (
+              <div>
+                <h2>Допущения набора
+                  <span className="hint">чего нет в исходных данных и что принято вместо</span>
+                </h2>
+                <ul className="dim" style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                  {dataset.assumptions.map((a, i) => <li key={i} style={{ marginBottom: 4 }}>{a}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'dicts' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+            <div>
+              <h2 style={{ marginTop: 0 }}>Навыки
+                <span className="hint">у заявки один, у инженера 1–3</span>
+              </h2>
+              {Object.entries(dataset.specializations).map(([k, v]) => (
+                <div key={k} className="pill accent" style={{ display: 'block', marginBottom: 6 }}>{v}</div>
+              ))}
+            </div>
+            <div>
+              <h2 style={{ marginTop: 0 }}>Тип транспорта
+                <span className="hint">один на инженера; в заявке — только при ограничении</span>
+              </h2>
+              {dataset.transport_types.map((t) => (
+                <div key={t.id} className="pill" style={{ display: 'block', marginBottom: 6 }}>{t.name}</div>
+              ))}
+            </div>
+            <div>
+              <h2 style={{ marginTop: 0 }}>Приоритет
+                <span className="hint">срочная выше при перепланировании</span>
+              </h2>
+              {dataset.priorities.map((pr) => (
+                <div key={pr.id} className="pill" style={{ display: 'block', marginBottom: 6,
+                  color: PRIORITY_COLOR[pr.id] }}>{pr.name}</div>
+              ))}
+              <p className="muted" style={{ fontSize: 12 }}>
+                Обязательные ограничения ТЗ: навык заявки входит в навыки инженера;
+                начало работ попадает в окно, а работа с дорогой — в смену; при
+                указанном транспорте у инженера именно он.
+                {dataset.uses_equipment && ' Оборудование — дополнительное усложнение.'}
+                {dataset.return_to_start
+                  ? ' В этом наборе маршрут заканчивается возвратом домой.'
+                  : ' Возврат в стартовую точку не планируется.'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Вкладка «Типы работ» — матрица «работа → оборудование» там, где
+            оборудование есть; иначе простой список с нормативами. */}
         {tab === 'types' && (
           <div style={{ overflowX: 'auto' }}>
-            <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
-              Матрица «работа → оборудование». Жёлтым — дефицитные приборы:
-              по 2 экземпляра на службу.
-            </p>
+            {dataset.uses_equipment && (
+              <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+                Матрица «работа → оборудование». Жёлтым — дефицитные приборы:
+                по 2 экземпляра на службу.
+              </p>
+            )}
             <table className="grid" style={{ fontSize: 11.5 }}>
               <thead><tr>
                 <th style={{ minWidth: 240 }}>Тип работ</th>
-                <th className="r" style={{ width: 74 }}>Мин. ур.</th>
+                <th className="r" style={{ width: 90 }}>Норматив</th>
+                {dataset.uses_levels && <th className="r" style={{ width: 74 }}>Мин. ур.</th>}
                 {dataset.equipment.map((q) => (
                   <th key={q.id} className="r" style={{ width: 34 }}>
                     <span title={q.name} style={{
@@ -224,10 +431,13 @@ export function ReferenceScreen({ dataset, engineers, plan }: {
                   return (
                     <tr key={w.id}>
                       <td>
-                        <b>{dataset.specializations[w.specialization]}</b>
-                        <div className="muted" style={{ fontSize: 11.5 }}>{w.name}</div>
+                        <b>{w.name}</b>
+                        <div className="muted" style={{ fontSize: 11.5 }}>
+                          {dataset.specializations[w.specialization]}
+                        </div>
                       </td>
-                      <td className="r num">{w.min_level}</td>
+                      <td className="r num">{w.base_duration_min} мин</td>
+                      {dataset.uses_levels && <td className="r num">{w.min_level}</td>}
                       {dataset.equipment.map((q) => (
                         <td key={q.id} className="r">
                           <span className="cell-box" style={need.has(q.id) ? {
@@ -241,13 +451,14 @@ export function ReferenceScreen({ dataset, engineers, plan }: {
                 })}
               </tbody>
             </table>
-            <div className="legend" style={{ marginTop: 10 }}>
-              <span><i style={{ background: 'var(--info)' }} />требуется</span>
-              <span><i style={{ background: 'var(--accent)' }} />дефицитный прибор</span>
-            </div>
+            {dataset.uses_equipment && (
+              <div className="legend" style={{ marginTop: 10 }}>
+                <span><i style={{ background: 'var(--info)' }} />требуется</span>
+                <span><i style={{ background: 'var(--accent)' }} />дефицитный прибор</span>
+              </div>
+            )}
           </div>
         )}
-
         {/* Оборудование и склады в макете — плитки, а не таблицы: позиций
             немного, а дефицит должен бросаться в глаза. */}
         {tab === 'equip' && (
@@ -305,7 +516,7 @@ export function ReferenceScreen({ dataset, engineers, plan }: {
         {tab === 'staff' && (
           <table className="grid">
             <thead><tr>
-              <th>Инженер</th><th style={{ width: 320 }}>Квалификация</th>
+              <th>Инженер</th><th style={{ width: 320 }}>Навыки</th>
               <th style={{ width: 150 }}>Транспорт</th>
               <th className="r" style={{ width: 130 }}>Рабочая смена</th>
             </tr></thead>
@@ -317,7 +528,7 @@ export function ReferenceScreen({ dataset, engineers, plan }: {
                     {e.skills.map((s) => (
                       <span key={s.specialization} className="pill accent"
                             style={{ marginRight: 6 }}>
-                        {s.specialization_name} ур. {s.level}
+                        {s.specialization_name}{dataset.uses_levels ? ` ур. ${s.level}` : ''}
                       </span>
                     ))}
                   </td>

@@ -439,3 +439,12 @@ table.grid tbody tr.click:hover { background: var(--surface-2); }
   padding: 9px 14px; border-radius: var(--r-md); font-size: 12.5px;
 }
 .empty { color: var(--ink-45); text-align: center; padding: 40px 16px; }
+
+/* ---------------------------------------------------------- переключатель */
+
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button {
+  border: 0; border-radius: 0; background: transparent; padding: 5px 11px; font-size: 12px;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }

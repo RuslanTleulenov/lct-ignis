@@ -25,6 +25,22 @@ from .models import (
 )
 
 
+#: Старые снимки писали приоритет как P1–P4 и транспорт как van/walk_transit.
+#: Формат ТЗ другой, но старые файлы должны читаться — переводим на лету.
+LEGACY_PRIORITY = {"P1": "urgent", "P2": "urgent", "P3": "normal", "P4": "normal"}
+LEGACY_TRANSPORT = {"van": "car", "walk_transit": "transit"}
+
+
+def parse_priority(raw: str) -> Priority:
+    return Priority(LEGACY_PRIORITY.get(raw, raw))
+
+
+def parse_transport(raw: str | None) -> TransportMode | None:
+    if raw in (None, ""):
+        return None
+    return TransportMode(LEGACY_TRANSPORT.get(raw, raw))
+
+
 def _created_at_min(raw: str, plan_day: Date) -> int:
     """«2026-08-11 18:00» -> минуты от полуночи дня плана (может быть отрицательным).
 
@@ -124,7 +140,7 @@ def load_dataset(path: str | Path) -> Dataset:
             break_from=hhmm_to_min(e["break_from"]),
             break_to=hhmm_to_min(e["break_to"]),
             break_min=e["break_min"],
-            vehicle_type=TransportMode(e["vehicle_type"]),
+            vehicle_type=parse_transport(e["vehicle_type"]),
             home_lat=e["home_lat"],
             home_lon=e["home_lon"],
             home_address=e["home_address"],
@@ -152,12 +168,16 @@ def load_dataset(path: str | Path) -> Dataset:
             tw_start=hhmm_to_min(j["tw_start"]),
             tw_end=hhmm_to_min(j["tw_end"]),
             tw_hard=bool(j["tw_hard"]),
-            priority=Priority(j["priority"]),
+            priority=parse_priority(j["priority"]),
             sla_deadline=hhmm_to_min(j["sla_deadline"]),
             created_at_min=_created_at_min(j["created_at"], plan_day),
             known_at_day_start=bool(j["known_at_day_start"]),
             status=j.get("status", "new"),
             contact_phone=j.get("contact_phone", ""),
+            required_transport=parse_transport(j.get("required_transport")),
+            geo_precision=j.get("geo_precision", "house"),
+            control_engineer=j.get("control_engineer") or None,
+            control_status=j.get("control_status", ""),
         )
         for j in raw["jobs"]
     ]
@@ -177,4 +197,6 @@ def load_dataset(path: str | Path) -> Dataset:
         engineers=engineers,
         jobs=jobs,
         events=events,
+        title=raw["meta"].get("title", ""),
+        return_to_start=bool(raw["meta"].get("return_to_start", False)),
     )

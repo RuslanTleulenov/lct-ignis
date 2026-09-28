@@ -128,7 +128,7 @@ Job (заявка)
   адрес, lat/lon
   work_type_id                  → тип работ
   time_window [start,end], hard/soft
-  sla_deadline, priority (P1..P4)
+  sla_deadline, priority (обычная | срочная — справочник ТЗ)
   base_duration_min             → базовая длительность
   complexity 1..5               → «сложность работ» из названия кейса
   required_skill(spec, level)   ← из work_type + complexity
@@ -147,7 +147,7 @@ Engineer (инженер)
   max_overtime_min
 
 Vehicle (транспорт)
-  id, type: car|van|walk_transit
+  id, type: car | foot | bike | transit   (справочник ТЗ: автомобиль, пешеход, велосипед, общественный транспорт)
   avg_speed_profile, cargo_capacity (габаритное оборудование)
 
 Equipment (оборудование)

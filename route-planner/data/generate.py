@@ -29,6 +29,7 @@ import csv
 import json
 import math
 import random
+import sys
 from datetime import date as Date, datetime, timedelta
 from pathlib import Path
 
@@ -289,7 +290,7 @@ def gen_engineers(rnd: random.Random, n: int) -> list[dict]:
             second = rnd.choice([s for s in SPECIALIZATIONS if s != spec])
             skills[second] = max(1, level - rnd.choice([1, 2]))
 
-        vehicle = rnd.choice(["car", "car", "van"])
+        vehicle = "car"
 
         onboard = set()
         for s in skills:
@@ -318,16 +319,19 @@ def gen_engineers(rnd: random.Random, n: int) -> list[dict]:
             "max_overtime_min": 60,
         })
 
-    # Пешие инженеры (пешком + общественный транспорт). Габаритное оборудование
-    # им недоступно, и это видно в «почему не назначено» — ценный случай для
-    # демонстрации. Но выбираем их только среди тех, все специализации которых
-    # обходятся без габарита: монтажнику камер нужна стремянка, электрику —
-    # тележка, климатчику — баллон с хладагентом. Пеший специалист в этих ролях
-    # не взял бы ни одной профильной заявки, и нехватка людей в отчёте выглядела
-    # бы как дефицит штата, хотя это ошибка комплектования.
+    # Инженеры без автомобиля — пешком, на велосипеде и общественным
+    # транспортом: справочник ТЗ требует все четыре типа. Габаритное
+    # оборудование им недоступно, и это видно в «почему не назначено» — ценный
+    # случай для демонстрации. Но выбираем их только среди тех, все
+    # специализации которых обходятся без габарита: монтажнику камер нужна
+    # стремянка, электрику — тележка, климатчику — баллон с хладагентом.
+    # Пеший специалист в этих ролях не взял бы ни одной профильной заявки, и
+    # нехватка людей в отчёте выглядела бы как дефицит штата, хотя это ошибка
+    # комплектования.
     walkable = [e for e in engineers if set(e["skills"]) <= {"it", "network"}]
-    for e in walkable[:max(1, len(engineers) // 6)]:
-        e["vehicle_type"] = "walk_transit"
+    without_car = ["transit", "bike", "foot", "transit"]
+    for e, vehicle in zip(walkable[:max(3, len(engineers) // 5)], without_car * 3):
+        e["vehicle_type"] = vehicle
 
     return engineers
 
@@ -372,10 +376,11 @@ def gen_jobs(rnd: random.Random, n: int, day: Date) -> list[dict]:
         else:
             tw_start, tw_end, tw_hard = day_start, day_end, False
 
-        priority = rnd.choices(["P1", "P2", "P3", "P4"],
-                               weights=[8, 15, 50, 27], k=1)[0]
+        # Справочник ТЗ: обычная либо срочная. Срочная имеет приоритет при
+        # перепланировании — и возникает по ходу дня, а не планируется накануне.
+        priority = rnd.choices(["urgent", "normal"], weights=[12, 88], k=1)[0]
 
-        if priority == "P1":
+        if priority == "urgent":
             # Аварию не планируют накануне — она возникает по ходу дня. Часть
             # успевает до развода смены, остальные прилетают в течение дня и
             # запускают перепланирование.
@@ -391,10 +396,8 @@ def gen_jobs(rnd: random.Random, n: int, day: Date) -> list[dict]:
         # SLA отсчитывается от начала рабочего дня, а не от момента заведения:
         # заявка, оформленная вчера в 18:00, не обязана быть закрыта к 02:00.
         sla_base = max(created, day_start)
-        if priority == "P1":
+        if priority == "urgent":
             sla = min(sla_base + timedelta(hours=4), day_end)
-        elif priority == "P2":
-            sla = min(sla_base + timedelta(hours=8), day_end)
         else:
             sla = tw_end
 
@@ -485,7 +488,7 @@ def gen_events(rnd: random.Random, jobs: list[dict], engineers: list[dict],
         "comment": f"{sick['name']} на больничном — заявки надо перераспределить",
     })
     with_car = [e for e in engineers
-                if e["vehicle_type"] != "walk_transit" and e["id"] != sick["id"]]
+                if e["vehicle_type"] == "car" and e["id"] != sick["id"]]
     if with_car:
         broken = rnd.choice(with_car)
         events.append({
@@ -539,7 +542,7 @@ def validate(engineers: list[dict], jobs: list[dict]) -> list[str]:
         for e in engineers:
             if e["skills"].get(j["specialization"], 0) < j["min_level"]:
                 continue
-            if needs_car and e["vehicle_type"] == "walk_transit":
+            if needs_car and e["vehicle_type"] != "car":
                 continue
             n_ok += 1
         candidates.append(n_ok)
@@ -590,6 +593,10 @@ def validate(engineers: list[dict], jobs: list[dict]) -> list[str]:
 
 
 def main() -> None:
+    # Консоль Windows по умолчанию в cp1251 и падает на стрелках и тире в
+    # отчёте; вывод отчёта важнее точности символов.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--jobs", type=int, default=70, help="сколько заявок (по умолч. 70)")
@@ -658,6 +665,10 @@ def main() -> None:
             "seed": args.seed,
             "generated_by": "data/generate.py",
             "city": "Москва",
+            "title": f"Синтетический набор, {args.date}",
+            # синтетика включает возврат домой: инженеры стартуют из дома и
+            # заканчивают день там же; в наборе заказчика возврата нет (ТЗ)
+            "return_to_start": True,
         },
         "specializations": SPECIALIZATIONS,
         "work_types": [
@@ -702,15 +713,14 @@ def main() -> None:
     centroid = (sum(j["lat"] for j in jobs) / len(jobs),
                 sum(j["lon"] for j in jobs) / len(jobs))
     spread = sum(haversine_km((j["lat"], j["lon"]), centroid) for j in jobs) / len(jobs)
-    no_car = sum(1 for e in engineers if e["vehicle_type"] == "walk_transit")
+    no_car = sum(1 for e in engineers if e["vehicle_type"] != "car")
 
     print(f"Датасет записан в {out}")
     print(f"  инженеров ........... {len(engineers)} (без авто: {no_car})")
     print(f"  заявок .............. {len(jobs)} "
           f"(известны с утра: {known}, приходят днём: {len(jobs) - known})")
-    print(f"  приоритет P1/P2 ..... "
-          f"{sum(1 for j in jobs if j['priority'] == 'P1')}/"
-          f"{sum(1 for j in jobs if j['priority'] == 'P2')}")
+    print(f"  срочных ............. "
+          f"{sum(1 for j in jobs if j['priority'] == 'urgent')}")
     print(f"  жёстких окон ........ {sum(1 for j in jobs if j['tw_hard'])}")
     print(f"  событий дня ......... {len(events)}")
     print(f"  трудоёмкость ........ {work_h:.0f} ч работ + ~{demand_h - work_h:.0f} ч "

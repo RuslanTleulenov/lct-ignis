@@ -31,35 +31,54 @@ def min_to_hhmm(value: int) -> str:
 # --------------------------------------------------------------------------
 
 class TransportMode(str, Enum):
-    CAR = "car"
-    VAN = "van"
-    WALK_TRANSIT = "walk_transit"
+    """Справочник ТЗ «Билайн Бизнес», п. 2.4.1: четыре типа, один на инженера."""
+
+    CAR = "car"             # Автомобиль
+    FOOT = "foot"           # Пешеход
+    BIKE = "bike"           # Велосипед
+    TRANSIT = "transit"     # Общественный транспорт
+
+    @property
+    def label(self) -> str:
+        return TRANSPORT_LABEL[self]
 
     @property
     def can_carry_bulky(self) -> bool:
-        """Габаритное оборудование увезёт только тот, у кого есть машина."""
-        return self is not TransportMode.WALK_TRANSIT
+        """Габаритное оборудование увезёт только автомобиль."""
+        return self is TransportMode.CAR
+
+
+TRANSPORT_LABEL = {
+    TransportMode.CAR: "Автомобиль",
+    TransportMode.FOOT: "Пешеход",
+    TransportMode.BIKE: "Велосипед",
+    TransportMode.TRANSIT: "Общественный транспорт",
+}
 
 
 class Priority(str, Enum):
-    P1 = "P1"   # авария
-    P2 = "P2"   # срочная
-    P3 = "P3"   # плановая
-    P4 = "P4"   # низкий приоритет
+    """Справочник ТЗ: два уровня. Срочная имеет приоритет при перепланировании."""
+
+    NORMAL = "normal"   # Обычная
+    URGENT = "urgent"   # Срочная
+
+    @property
+    def label(self) -> str:
+        return "Срочная" if self is Priority.URGENT else "Обычная"
 
     @property
     def drop_penalty(self) -> int:
         """Штраф за неназначенную заявку, в «минутах» целевой функции.
 
-        Порядок величин важнее абсолютных значений: аварию солвер не бросит
+        Порядок величин важнее абсолютных значений: срочную солвер не бросит
         никогда, кроме случая, когда её физически невозможно выполнить.
         """
-        return {"P1": 200_000, "P2": 60_000, "P3": 20_000, "P4": 9_000}[self.value]
+        return 200_000 if self is Priority.URGENT else 20_000
 
     @property
     def sla_penalty_per_min(self) -> int:
         """Во сколько обходится каждая минута просрочки SLA."""
-        return {"P1": 300, "P2": 90, "P3": 25, "P4": 10}[self.value]
+        return 300 if self is Priority.URGENT else 25
 
 
 # --------------------------------------------------------------------------
@@ -176,6 +195,17 @@ class Job:
     known_at_day_start: bool
     status: str = "new"
     contact_phone: str = ""
+    #: Требуемый тип транспорта из ТЗ: указывается только при наличии
+    #: ограничения. Габаритное оборудование ставит его в «автомобиль» само.
+    required_transport: TransportMode | None = None
+    #: Точность координат: house | house~ | street | district. Всё, кроме
+    #: house, интерфейс показывает как приблизительное.
+    geo_precision: str = "house"
+    #: Как было на самом деле — из контрольного распределения заказчика:
+    #: кому диспетчер отдал заявку и чем она закончилась. Нужно только для
+    #: сравнения «план против факта»; у синтетики пусто.
+    control_engineer: str | None = None
+    control_status: str = ""
 
     @property
     def location(self) -> tuple[float, float]:
@@ -204,6 +234,12 @@ class Dataset:
     engineers: list[Engineer]
     jobs: list[Job]
     events: list[DayEvent] = field(default_factory=list)
+    #: Как называть набор в интерфейсе: «Билайн Бизнес — Восток, 17.08.2026».
+    title: str = ""
+    #: Обязательный MVP по ТЗ: маршрут начинается в стартовой точке, а
+    #: возвращаться после последней заявки не требуется. Синтетический набор
+    #: может включить возврат домой — тогда пробег считается с ним.
+    return_to_start: bool = False
 
     def job(self, job_id: str) -> Job:
         return next(j for j in self.jobs if j.id == job_id)
@@ -211,9 +247,27 @@ class Dataset:
     def engineer(self, engineer_id: str) -> Engineer:
         return next(e for e in self.engineers if e.id == engineer_id)
 
+    def required_transport(self, job: Job) -> TransportMode | None:
+        """Какой транспорт обязателен: указанный в заявке либо автомобиль,
+        если хоть один требуемый инструмент габаритный."""
+        if job.required_transport is not None:
+            return job.required_transport
+        if any(self.equipment[q].bulky for q in job.required_equipment):
+            return TransportMode.CAR
+        return None
+
     def needs_vehicle(self, job: Job) -> bool:
-        """Нужна ли машина: хоть один требуемый инструмент габаритный."""
-        return any(self.equipment[q].bulky for q in job.required_equipment)
+        return self.required_transport(job) is TransportMode.CAR
+
+    @property
+    def uses_levels(self) -> bool:
+        """Есть ли в наборе уровни квалификации выше первого — иначе интерфейс
+        их не показывает: справочник ТЗ уровней не знает."""
+        return any(w.min_level > 1 for w in self.work_types.values())
+
+    @property
+    def uses_equipment(self) -> bool:
+        return bool(self.equipment)
 
 
 # --------------------------------------------------------------------------

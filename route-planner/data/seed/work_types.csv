@@ -1,0 +1,13 @@
+﻿id;name;specialization;min_level;base_duration_min;equipment
+WT-01;Диагностика обрыва оптической линии;network;3;75;EQ-OTDR|EQ-SPLICE
+WT-02;Монтаж СКС: розетки и патч-панель;network;2;105;EQ-CRIMP|EQ-LANTEST|EQ-DRILL
+WT-03;Настройка коммутатора / маршрутизатора;network;3;45;EQ-LAPTOP
+WT-04;Замена источника бесперебойного питания;power;2;70;EQ-MULTI|EQ-TROLLEY
+WT-05;Ремонт вводного электрощита;power;4;135;EQ-MULTI|EQ-MEGGER|EQ-PPE
+WT-06;Плановое ТО электрощитовой;power;3;90;EQ-MULTI|EQ-THERMAL
+WT-07;Техобслуживание кондиционера;hvac;2;60;EQ-GAUGE|EQ-VACUUM
+WT-08;Дозаправка системы хладагентом;hvac;3;70;EQ-GAUGE|EQ-FREON
+WT-09;Монтаж камеры видеонаблюдения;security;2;75;EQ-DRILL|EQ-LADDER|EQ-LAPTOP
+WT-10;Настройка контроллера СКУД;security;3;85;EQ-LAPTOP|EQ-PROG
+WT-11;Замена и настройка рабочего места;it;1;40;EQ-LAPTOP|EQ-SCREW
+WT-12;Аварийное восстановление канала связи;network;4;100;EQ-OTDR|EQ-SPLICE|EQ-LAPTOP

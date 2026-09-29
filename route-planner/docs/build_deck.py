@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import io
 import sys
 from pathlib import Path
 
@@ -46,13 +47,16 @@ TEAM = {
     "название": "Ignis",
     "капитан": "Тлеуленов Руслан, фулстак-разработчик",
     "участников": "2",
+    # (имя, роль, ник, телефон, место работы/учёбы, фото или None)
     "состав": [
         ("Тлеуленов Руслан", "Капитан, фулстак-разработка",
          "@RuslanTleulenov", "+7 952 887-95-28",
-         "ТГУ, ФТФ, 1.1.9 · МНС в ТГУ"),
+         "ТГУ, ФТФ, 1.1.9 · МНС в ТГУ",
+         ASSETS / "team" / "ruslan.png"),
         ("Бородина Анжелика", "Дизайн, адаптивность",
          "—", "—",
-         "ТГУ, ФТФ, 1.1.8 · СибАгро"),
+         "ТГУ, ФТФ, 1.1.8 · СибАгро",
+         ASSETS / "team" / "anzhelika.png"),
     ],
     "история": (
         "Мы муж и жена: одна семья и одна команда задолго до хакатонов. "
@@ -134,6 +138,35 @@ def picture(slide, shape, image: Path, fill_box: bool = False) -> None:
             top += (height - new_height) // 2
             height = new_height
     slide.shapes.add_picture(str(image), left, top, width, height)
+
+
+def crop_fill(slide, shape, image: Path) -> None:
+    """Вписать фото в рамку карточки, обрезав по центру, без растяжения.
+
+    Портретные фото участников почти никогда не совпадают по пропорциям с
+    плейсхолдером; `picture(..., fill_box=True)` тянет картинку и слегка
+    плющит лицо. Здесь обрезаем длинную сторону по центру — дальше фото
+    встаёт в рамку ровно, как в карточке сотрудника, а не как растянутое.
+    """
+    box = (shape.left, shape.top, shape.width, shape.height)
+    shape._element.getparent().remove(shape._element)
+    left, top, width, height = box
+    target_ratio = width / height
+    with Image.open(image) as im:
+        im = im.convert("RGB")
+        ratio = im.width / im.height
+        if ratio > target_ratio:            # фото шире рамки — обрезать по бокам
+            new_width = int(im.height * target_ratio)
+            x0 = (im.width - new_width) // 2
+            im = im.crop((x0, 0, x0 + new_width, im.height))
+        else:                                # фото выше рамки — обрезать сверху/снизу
+            new_height = int(im.width / target_ratio)
+            y0 = (im.height - new_height) // 2
+            im = im.crop((0, y0, im.width, y0 + new_height))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+    buf.seek(0)
+    slide.shapes.add_picture(buf, left, top, width, height)
 
 
 #: Ширина одного знака заголовка на плашке, дюймы. Снято с отрендеренного
@@ -271,12 +304,14 @@ def build(prs: Presentation) -> list[int]:
     start_left = (prs.slide_width - block_width) // 2
 
     for i, (card, person) in enumerate(zip(used, TEAM["состав"])):
-        name, role, nick, phone, place = person
+        name, role, nick, phone, place, photo = person
         target_left = start_left + i * (card_width + gap)
         delta = target_left - sh[card["bg"]].left
         for key in ("bg", "photo", "name", "role"):
             shp = sh[card[key]]
             shp.left = shp.left + delta
+        if photo is not None:
+            crop_fill(t, sh[card["photo"]], photo)
         put(sh[card["name"]], name)
         contacts = [role]
         if nick != "—":

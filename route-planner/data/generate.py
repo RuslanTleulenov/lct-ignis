@@ -33,6 +33,12 @@ import sys
 from datetime import date as Date, datetime, timedelta
 from pathlib import Path
 
+if sys.platform == "win32":
+    # Вывод использует символы вне кодовой страницы консоли (→, ≈, ⚠, ✓): на
+    # cp1251 падает с UnicodeEncodeError. UTF-8 работает при любой локали.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # --------------------------------------------------------------------------
 # Справочник: специализации
 # --------------------------------------------------------------------------

@@ -1,8 +1,8 @@
-# Солвер
+# Solver
 ortools==9.15.6755
 
-# Маршрутизация по дорожному графу OSM: Дейкстра по 38 тыс. вершин и
-# KD-дерево для привязки точек к улицам. На чистом Python это минуты.
+# Routing on the OSM road graph: Dijkstra over ~38k vertices and a KD-tree
+# for snapping points to streets. Pure Python would take minutes.
 scipy==1.17.1
 numpy==2.3.5
 
@@ -12,12 +12,12 @@ uvicorn[standard]==0.39.0
 pydantic==2.12.4
 python-multipart==0.0.20
 
-# Хранилище
+# Storage
 SQLAlchemy==2.0.44
 
-# Импорт датасетов заказчика
+# Importing the customer's datasets
 openpyxl==3.1.5
 
-# Разработка
+# Development
 pytest==8.4.2
 ruff==0.14.4

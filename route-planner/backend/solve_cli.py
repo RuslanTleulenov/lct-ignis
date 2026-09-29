@@ -8,7 +8,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+if sys.platform == "win32":
+    # Вывод — план, объяснения — использует символы вне кодовой страницы
+    # консоли (σ, →, ✓): на cp1251 это падает с UnicodeEncodeError. UTF-8
+    # работает при любой локали Windows.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from app.domain.loader import load_dataset
 from app.explain.why_not import why_not_report

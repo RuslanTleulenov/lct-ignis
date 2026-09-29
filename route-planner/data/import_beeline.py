@@ -45,6 +45,12 @@ from collections import Counter, OrderedDict
 from datetime import datetime
 from pathlib import Path
 
+if sys.platform == "win32":
+    # Вывод использует символы вне кодовой страницы консоли (→): на cp1251
+    # падает с UnicodeEncodeError. UTF-8 работает при любой локали.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).parent))
 from geocode import Geocoder  # noqa: E402
 

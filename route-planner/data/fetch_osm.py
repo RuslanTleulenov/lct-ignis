@@ -23,10 +23,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+if sys.platform == "win32":
+    # Прогресс использует символы вне кодовой страницы консоли (→, ✓): на
+    # cp1251 падает с UnicodeEncodeError. UTF-8 работает при любой локали.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 OVERPASS = [
     "https://overpass-api.de/api/interpreter",

@@ -41,6 +41,12 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+if sys.platform == "win32":
+    # Вывод использует символы вне кодовой страницы консоли (→): на cp1251
+    # падает с UnicodeEncodeError. UTF-8 работает при любой локали.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 HEADERS = {"User-Agent": "lct2026-route-planner/0.1 (hackathon prototype)"}
 MIN_INTERVAL_S = 1.1            # политика Nominatim: не чаще одного запроса в секунду

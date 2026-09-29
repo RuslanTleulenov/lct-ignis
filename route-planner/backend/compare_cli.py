@@ -13,7 +13,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+if sys.platform == "win32":
+    # Вывод использует символы вне кодовой страницы консоли (σ, →, ✓): на
+    # cp1251 падает с UnicodeEncodeError. UTF-8 работает при любой локали.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from app.baseline.control import control_plan
 from app.baseline.greedy import compare, greedy_plan, tz_baseline
